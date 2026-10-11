@@ -245,6 +245,14 @@ mod tests {
         );
         assert_eq!(decode(&HELLO).unwrap(), Packet::Hello);
         assert_eq!(decode_relay(&HELLO).unwrap(), Relay::Hello);
+        // A GUID prefix is not a hello; only the exact two-byte frame acknowledges.
+        let mut relay = 1u64.to_le_bytes().to_vec();
+        relay.extend(456u32.to_le_bytes());
+        relay.extend(snapshot().encode().unwrap());
+        assert!(matches!(
+            decode_relay(&relay).unwrap(),
+            Relay::Snapshot { guid: 1, .. }
+        ));
     }
 
     #[test]

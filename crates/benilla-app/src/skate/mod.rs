@@ -137,6 +137,7 @@ enum Reply {
 
 /// One engine pose, out of the engine's own math types (its Bevy is not ours).
 struct Frame {
+    sample_ms: u32,
     root: Mat4,
     bones: Vec<Mat4>,
     names: Vec<String>,
@@ -156,6 +157,13 @@ struct Frame {
 fn frame(p: skate_host::bridge::Pose) -> Frame {
     let m = |c: [f32; 16]| Mat4::from_cols_array(&c);
     Frame {
+        sample_ms: {
+            static CLOCK: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+            CLOCK
+                .get_or_init(std::time::Instant::now)
+                .elapsed()
+                .as_millis() as u32
+        },
         root: m(p.root.to_cols_array()),
         bones: p.bones.iter().map(|b| m(b.to_cols_array())).collect(),
         names: p.names,
@@ -399,6 +407,7 @@ fn stop(host: &mut Host, drive: &mut SkateDrive, pose: &mut SkatePose) {
 }
 
 fn present(frame: Frame, origin: Vec3, drive: &mut SkateDrive, pose: &mut SkatePose) {
+    pose.sample_ms = frame.sample_ms;
     drive.pos = from_skate(frame.root.w_axis.truncate(), origin);
     let flat = Vec3::new(frame.velocity.x, 0.0, frame.velocity.z);
     drive.speed = flat.length() / METERS_PER_YARD;
@@ -585,7 +594,6 @@ fn update(
                 audio.reset();
                 audio.observe(&f.state, f.velocity);
                 present(f, host.origin, &mut drive, &mut pose);
-                pose.sample_ms = (time.elapsed_secs_f64() * 1000.0) as u32;
             }
             Reply::Pose(epoch, f) if epoch == host.epoch && drive.active => {
                 if f.tick / 120 != host.logged_tick / 120 {
@@ -632,7 +640,6 @@ fn update(
                 }
                 audio.observe(&f.state, f.velocity);
                 present(f, host.origin, &mut drive, &mut pose);
-                pose.sample_ms = (time.elapsed_secs_f64() * 1000.0) as u32;
             }
             Reply::Error(e) => {
                 warn!("skate stopped: {e}");
@@ -759,6 +766,7 @@ pub(crate) fn plugin(app: &mut App) {
             (
                 update,
                 replication::send_local,
+                board::update,
                 sound::update,
                 score::draw,
             )
@@ -766,13 +774,6 @@ pub(crate) fn plugin(app: &mut App) {
                 .in_set(WorldStage::Input)
                 .before(crate::player::PlayerControlSet)
                 .in_set(crate::char_select::InWorldGated),
-        )
-        .add_systems(
-            Update,
-            board::update
-                .in_set(WorldStage::Input)
-                .after(update)
-                .before(crate::player::PlayerControlSet),
         )
         .add_systems(
             PostUpdate,

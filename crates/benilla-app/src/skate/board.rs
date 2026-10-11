@@ -83,6 +83,12 @@ pub(super) struct Board {
     materials: Vec<Handle<StandardMaterial>>,
 }
 
+pub(super) fn hide_all(board: &Board, commands: &mut Commands) {
+    for (entity, _) in board.parts.iter().chain(board.remote.values().flatten()) {
+        commands.entity(*entity).insert(Visibility::Hidden);
+    }
+}
+
 fn spawn(
     model: &Model,
     commands: &mut Commands,
@@ -245,7 +251,12 @@ pub(super) fn update(
         let Some(matrices) = matrices else {
             static WARNED: std::sync::Once = std::sync::Once::new();
             WARNED.call_once(|| warn!("skate board: a board joint is missing from the pose"));
-            return;
+            for (entity, _) in &*surfaces {
+                if let Ok((_, mut visibility)) = parts.get_mut(*entity) {
+                    *visibility = Visibility::Hidden;
+                }
+            }
+            continue;
         };
         // Vertices relative to the deck, so no vertex is a far-off world coordinate.
         let anchor = pose.bone("SKATEBOARD_ROOT").map_or(pose.origin, |m| {

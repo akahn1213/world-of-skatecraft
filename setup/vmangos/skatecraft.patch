@@ -102,7 +102,7 @@ new file mode 100644
 index 0000000..b34bca5
 --- /dev/null
 +++ b/src/game/Skatecraft.cpp
-@@ -0,0 +1,436 @@
+@@ -0,0 +1,439 @@
 +#include "Skatecraft.h"
 +#include "Database/DBCStores.h"
 +#include "Chat.h"
@@ -322,9 +322,12 @@ index 0000000..b34bca5
 +            data.size() < 2 || data.size() > 8192 || data.read<uint8>(0) != 1)
 +            return;
 +        auto& state = player->skateVisual;
++        uint32 now = WorldTimer::getMSTime();
 +        uint32 sinceEntry = received - state.mapEntry;
-+        if (!sinceEntry || sinceEntry >= 0x80000000u ||
-+            WorldTimer::getMSTimeDiff(received, WorldTimer::getMSTime()) > 2000)
++        // Retire the entry barrier once pre-entry packets necessarily fail freshness.
++        if ((WorldTimer::getMSTimeDiff(state.mapEntry, now) < 5000 &&
++             (!sinceEntry || sinceEntry >= 0x80000000u)) ||
++            WorldTimer::getMSTimeDiff(received, now) > 2000)
 +            return;
 +        uint8 kind = data.read<uint8>(1);
 +        if (kind == 0)

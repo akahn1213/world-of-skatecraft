@@ -7,6 +7,7 @@ use benilla_assets::LockRecover;
 use benilla_protocol::skate::{self, Joint, Relay, Snapshot};
 use benilla_protocol::{SessionEvent, SessionEventKind};
 use bevy::prelude::*;
+use bevy::time::Real;
 
 use super::{rig, SkatePose};
 use crate::net::{ClientCommand, GuidIndex, NetCommands, NetHandlerApp, SelfGuid};
@@ -185,9 +186,23 @@ pub(super) fn register(app: &mut App) {
         .net_handler(K::Worldport, on_edge);
 }
 
-fn on_edge(In(ev): In<SessionEvent>, mut link: ResMut<Link>, time: Res<Time>) {
+fn on_edge(
+    In(ev): In<SessionEvent>,
+    mut link: ResMut<Link>,
+    time: Res<Time<Real>>,
+    mut remotes: Query<(Entity, &mut RemoteSkate)>,
+    mut commands: Commands,
+    board: Res<super::board::Board>,
+) {
     match ev {
         SessionEvent::Connected { .. } | SessionEvent::Worldport { .. } => {
+            super::board::hide_all(&board, &mut commands);
+            for (entity, mut remote) in &mut remotes {
+                remote.stream = Stream::default();
+                remote.pose = SkatePose::default();
+                remote.held = rig::Held::default();
+                commands.entity(entity).remove::<ReplicatedSkating>();
+            }
             link.mailbox.lock_recover().payload = None;
             link.entered = true;
             link.acknowledged = false;
@@ -197,6 +212,13 @@ fn on_edge(In(ev): In<SessionEvent>, mut link: ResMut<Link>, time: Res<Time>) {
             link.ride = link.ride.wrapping_add(1);
         }
         SessionEvent::Disconnected { .. } => {
+            super::board::hide_all(&board, &mut commands);
+            for (entity, mut remote) in &mut remotes {
+                remote.stream = Stream::default();
+                remote.pose = SkatePose::default();
+                remote.held = rig::Held::default();
+                commands.entity(entity).remove::<ReplicatedSkating>();
+            }
             link.mailbox.lock_recover().payload = None;
             link.entered = false;
             link.acknowledged = false;
@@ -208,7 +230,7 @@ fn on_edge(In(ev): In<SessionEvent>, mut link: ResMut<Link>, time: Res<Time>) {
 fn on_packet(
     In(ev): In<SessionEvent>,
     mut link: ResMut<Link>,
-    time: Res<Time>,
+    time: Res<Time<Real>>,
     index: Res<GuidIndex>,
     self_guid: Res<SelfGuid>,
     mut remotes: Query<&mut RemoteSkate>,
@@ -296,7 +318,7 @@ fn capture(pose: &SkatePose, ride: u32, sequence: u32) -> Option<Snapshot> {
 
 pub(super) fn send_local(
     pose: Res<SkatePose>,
-    time: Res<Time>,
+    time: Res<Time<Real>>,
     mut link: ResMut<Link>,
     commands: Res<NetCommands>,
 ) {
@@ -331,7 +353,7 @@ pub(super) fn send_local(
 
 #[allow(clippy::type_complexity)]
 pub(crate) fn update_remote(
-    time: Res<Time>,
+    time: Res<Time<Real>>,
     mut commands: Commands,
     mut units: Query<(
         Entity,
@@ -344,10 +366,10 @@ pub(crate) fn update_remote(
     let now = time.elapsed_secs_f64();
     for (entity, mut remote, mut transform, motion, was_active) in &mut units {
         let Some(snapshot) = remote.stream.sample(now) else {
-            remote.pose.active = false;
+            remote.pose = SkatePose::default();
+            remote.held = rig::Held::default();
             if was_active {
                 commands.entity(entity).remove::<ReplicatedSkating>();
-                remote.held = rig::Held::default();
             }
             continue;
         };
@@ -374,7 +396,7 @@ pub(crate) fn update_remote(
         if let Some(mut motion) = motion {
             motion.wow_pos = benilla_assets::coords::bevy_to_wow(pos);
             let forward = rotation * Vec3::Z;
-            motion.orientation = (-forward.z).atan2(-forward.x);
+            motion.orientation = (-forward.x).atan2(-forward.z);
             motion.pending.clear();
         }
         if !was_active {
