@@ -33,6 +33,7 @@ impl Mailbox {
 #[derive(Resource, Default)]
 pub(super) struct Link {
     entered: bool,
+    supported: bool,
     acknowledged: bool,
     attempts: u8,
     next_hello: f64,
@@ -79,6 +80,10 @@ fn newer(a: u32, b: u32) -> bool {
 
 impl Stream {
     fn push(&mut self, snapshot: Snapshot, receipt_ms: u32, now: f64) -> bool {
+        // A server-validated off or expired stream may belong to a previous login session.
+        if !self.active(now) {
+            self.samples.clear();
+        }
         let mut local = now;
         if let Some(last) = self.samples.back() {
             let old = &last.snapshot;
@@ -181,6 +186,7 @@ pub(super) fn register(app: &mut App) {
     use SessionEventKind as K;
     app.init_resource::<Link>()
         .net_handler(K::Skate, on_packet)
+        .net_handler(K::Chat, on_capabilities)
         .net_handler(K::Connected, on_edge)
         .net_handler(K::Disconnected, on_edge)
         .net_handler(K::Worldport, on_edge);
@@ -205,6 +211,7 @@ fn on_edge(
             }
             link.mailbox.lock_recover().payload = None;
             link.entered = true;
+            link.supported = false;
             link.acknowledged = false;
             link.attempts = 0;
             link.next_hello = time.elapsed_secs_f64();
@@ -221,9 +228,24 @@ fn on_edge(
             }
             link.mailbox.lock_recover().payload = None;
             link.entered = false;
+            link.supported = false;
             link.acknowledged = false;
         }
         _ => {}
+    }
+}
+
+fn on_capabilities(In(ev): In<SessionEvent>, mut link: ResMut<Link>) {
+    if let SessionEvent::Chat(message) = ev {
+        if link.entered
+            && message.language == benilla_protocol::messages::LANGUAGE_ADDON
+            && message.sender_guid == 0
+            && message.text == "SKATECRAFT\tCAPS\t1"
+        {
+            link.supported = true;
+            link.attempts = 0;
+            link.next_hello = f64::NEG_INFINITY;
+        }
     }
 }
 
@@ -328,7 +350,14 @@ pub(super) fn send_local(
     }
     if !link.acknowledged {
         if link.attempts < 3 && now >= link.next_hello {
-            link.publish(skate::HELLO.to_vec(), &commands);
+            if link.supported {
+                link.publish(skate::HELLO.to_vec(), &commands);
+            } else {
+                let _ = commands.0.send(ClientCommand::AddonMessage {
+                    distribution: benilla_ui::script::AddonDistribution::Party,
+                    text: "SKATECRAFT\tV\t1".into(),
+                });
+            }
             link.attempts += 1;
             link.next_hello = now + 2.0;
         }
@@ -408,6 +437,60 @@ pub(crate) fn update_remote(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn discovery_uses_stock_chat_until_the_server_advertises_support() {
+        let mut world = World::new();
+        world.insert_resource(Link {
+            entered: true,
+            ..default()
+        });
+        world.init_resource::<SkatePose>();
+        world.init_resource::<Time<Real>>();
+        let (tx, rx) = crossbeam_channel::unbounded();
+        world.insert_resource(NetCommands(tx));
+        world.run_system_once(send_local).unwrap();
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ClientCommand::AddonMessage { text, .. } if text == "SKATECRAFT\tV\t1"
+        ));
+        world.resource_mut::<Link>().supported = true;
+        world.resource_mut::<Link>().next_hello = 0.0;
+        world.run_system_once(send_local).unwrap();
+        let ClientCommand::Skate(slot) = rx.try_recv().unwrap() else {
+            panic!("a supported server receives the binary hello");
+        };
+        assert_eq!(slot.lock_recover().take().unwrap(), skate::HELLO);
+    }
+
+    #[test]
+    fn another_players_addon_message_cannot_enable_extension_opcodes() {
+        let mut world = World::new();
+        world.insert_resource(Link {
+            entered: true,
+            ..default()
+        });
+        let mut message = benilla_protocol::messages::ChatMessage {
+            chat_type: benilla_protocol::messages::CHAT_MSG_PARTY,
+            language: benilla_protocol::messages::LANGUAGE_ADDON,
+            sender_guid: 1,
+            target_guid: 0,
+            sender_name: None,
+            channel: None,
+            text: "SKATECRAFT\tCAPS\t1".into(),
+            chat_tag: 0,
+        };
+        world
+            .run_system_once_with(on_capabilities, SessionEvent::Chat(message.clone()))
+            .unwrap();
+        assert!(!world.resource::<Link>().supported);
+        message.sender_guid = 0;
+        world
+            .run_system_once_with(on_capabilities, SessionEvent::Chat(message))
+            .unwrap();
+        assert!(world.resource::<Link>().supported);
+    }
 
     fn snapshot(seq: u32, ms: u32, x: f32) -> Snapshot {
         Snapshot {
@@ -454,6 +537,25 @@ mod tests {
         assert!(stream.push(restart, 200, 1.3));
         assert_eq!(stream.sample(1.3).unwrap().position[0], 20.0);
         assert!(!stream.push(snapshot(100, 200, 30.0), 300, 1.4));
+    }
+
+    #[test]
+    fn a_new_login_can_restart_ride_numbers_after_off_or_timeout() {
+        for stopped in [false, true] {
+            let mut stream = Stream::default();
+            let mut old = snapshot(20, 100, 0.0);
+            old.ride = 50;
+            stream.push(old.clone(), 100, 1.0);
+            if stopped {
+                old.sequence += 1;
+                old.active = false;
+                old.joints.clear();
+                stream.push(old, 200, 1.1);
+            }
+            let now = if stopped { 1.2 } else { 2.1 };
+            assert!(stream.push(snapshot(1, 0, 10.0), 300, now));
+            assert_eq!(stream.sample(now).unwrap().position[0], 10.0);
+        }
     }
 
     #[test]
