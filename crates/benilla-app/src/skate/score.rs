@@ -8,7 +8,11 @@ use benilla_protocol::SessionEvent;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-use crate::net::{ObjectStore, SelfPlayer};
+use crate::net::{NetHandlerApp, ObjectStore, SelfPlayer};
+
+pub(super) fn register(app: &mut App) {
+    app.net_handler(benilla_protocol::SessionEventKind::XpGain, on_xp_gain);
+}
 
 /// How long a landed line stays up, then how long it fades (seconds).
 const LANDED_HOLD: f32 = 2.5;
