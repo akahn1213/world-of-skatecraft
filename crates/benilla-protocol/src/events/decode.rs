@@ -25,6 +25,7 @@ fn spell_caster(item_or_caster: u64, caster_slot: u64) -> u64 {
 /// `ServerPacket` variant must be a compile error here, never a silent no-op.
 pub fn decode(packet: ServerPacket) -> Vec<SessionEvent> {
     match packet {
+        ServerPacket::Skate(packet) => vec![SessionEvent::Skate(packet)],
         ServerPacket::UpdateObject { objects } => decode_objects(objects),
         // In order, each move as if alone: the app rebuilds a mover's arc from packet order.
         ServerPacket::CompressedMoves { packets } => packets.into_iter().flat_map(decode).collect(),

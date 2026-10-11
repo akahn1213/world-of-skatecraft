@@ -73,7 +73,14 @@ pub(crate) fn conform_units(
     time: Res<Time>,
     spatial: SpatialQuery,
     decals: benilla_world::decal::WorldDecal,
-    units: Query<(&Transform, Has<benilla_world::rig_anim::AnimParked>), Without<ConformNode>>,
+    units: Query<
+        (
+            &Transform,
+            Has<benilla_world::rig_anim::AnimParked>,
+            Has<crate::skate::replication::ReplicatedSkating>,
+        ),
+        Without<ConformNode>,
+    >,
     mut nodes: Query<(&ConformNode, &mut Transform)>,
     mut ups: Local<EntityHashMap<Vec3>>,
     mut disabled: Local<Option<bool>>,
@@ -88,9 +95,14 @@ pub(crate) fn conform_units(
     let mut max_pitch: Option<(Entity, f32)> = None;
     let mut count = 0usize;
     for (node, mut node_tf) in &mut nodes {
-        let Ok((unit_tf, parked)) = units.get(node.unit) else {
+        let Ok((unit_tf, parked, skating)) = units.get(node.unit) else {
             continue;
         };
+        if skating {
+            node_tf.rotation = Quat::IDENTITY;
+            ups.remove(&node.unit);
+            continue;
+        }
         if parked {
             ups.remove(&node.unit);
             continue;

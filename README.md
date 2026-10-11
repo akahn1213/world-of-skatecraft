@@ -90,6 +90,23 @@ abilities, buffs to drag onto your action bar; they work only while you are on t
 The profession needs the patched server that the Linux setup builds (the Windows setup still runs
 the stock server). On another server **J** just hops on and off the board.
 
+### Multiplayer skating
+
+Clients with this fork's skating relay support can display nearby players' character and board
+poses on a server built with this fork's patch. Each client still runs only its own skating
+physics. The server retains and relays visual snapshots; it does not simulate or judge tricks.
+Ordinary WoW movement still supplies the server's character position and visibility.
+
+The extension negotiates support before sending poses. Stock servers and older clients keep
+ordinary WoW movement, without replicated boards or skating poses. Each observing client needs
+its own converted Skate 3 data. Remote poses are interpolated, not exact copies of every rendered
+frame; remote skating audio and shared trick scoring are not part of the visual relay.
+`WOW_SKATE_NET_HZ` sets the snapshot rate (default 20, clamped to 1–20 updates per second).
+
+Updating the client alone is not enough: rebuild the patched server and restart it as described
+in [INSTALL.md](INSTALL.md#multiplayer-skating-verification). The Windows setup's stock server
+does not provide the relay.
+
 Your account is a GM, so chat commands like `.tele stormwind`, `.levelup 59` and
 `.additem <id>` work.
 

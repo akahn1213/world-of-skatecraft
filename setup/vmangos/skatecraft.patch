@@ -50,6 +50,14 @@ index cdabf42..a013c4f 100644
  #include "Guild.h"
  #include "GuildMgr.h"
  #include "ObjectAccessor.h"
+@@ -447,6 +448,7 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
+         alreadyOnline = true;
+         pCurrChar->GetSession()->SetPlayer(nullptr);
++        Skatecraft::ResetVisualSession(pCurrChar);
+         pCurrChar->SetSession(this);
+
+         // Need to attach packet bcaster to the new socket
+         if (pCurrChar->m_broadcaster)
 @@ -603,6 +604,7 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
      //sLog.Out(LOG_BASIC, LOG_LVL_DEBUG, "Player %s added to Map.",pCurrChar->GetName());
  
@@ -70,10 +78,19 @@ index 47f576d..2004e85 100644
  
  bool WorldSession::SanitizeChatMessage(std::string& msg, uint32 lang, uint32 msgType)
  {
-@@ -156,6 +157,9 @@ void WorldSession::HandleChatMessageOpcode(WorldPackets::Chat::ChatMessage const
+@@ -156,6 +157,18 @@ void WorldSession::HandleChatMessageOpcode(WorldPackets::Chat::ChatMessage const
          return;
      }
  
++    if (packet.lang == LANG_ADDON && _player && packet.message == "SKATECRAFT\tV\t1")
++    {
++        // Chat handlers run on the world thread; never touch map-owned visual state here.
++        uint32 now = WorldTimer::getMSTime();
++        if (m_skateCapsReplied && WorldTimer::getMSTimeDiff(m_skateCapsReplyTime, now) < 1000)
++            return;
++        m_skateCapsReplied = true;
++        m_skateCapsReplyTime = now;
++    }
 +    if (packet.lang == LANG_ADDON && _player && Skatecraft::HandleAddonMessage(_player, packet.message))
 +        return;
 +
@@ -85,15 +102,21 @@ new file mode 100644
 index 0000000..b34bca5
 --- /dev/null
 +++ b/src/game/Skatecraft.cpp
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,436 @@
 +#include "Skatecraft.h"
 +#include "Database/DBCStores.h"
 +#include "Chat.h"
 +#include "Player.h"
 +#include "SpellMgr.h"
 +#include "Timer.h"
++#include "Map.h"
++#include "Opcodes.h"
++#include "UpdateData.h"
++#include "PlayerBroadcaster.h"
 +
 +#include <cstdlib>
++#include <cmath>
++#include <unordered_set>
 +#include <unordered_map>
 +
 +extern SkillRaceClassInfoMap SkillRaceClassInfoBySkill;
@@ -131,6 +154,231 @@ index 0000000..b34bca5
 +    static SkillRaceClassInfoEntry s_raceClass;
 +
 +    static std::unordered_map<uint32, uint32> s_lastLine; // player guid low -> ms
++
++    // Extension only: visual poses never relocate the authoritative WoW player or bypass anticheat.
++    static bool ReadFloat(ByteBuffer& data, float& value, float bound)
++    {
++        if (data.size() - data.rpos() < sizeof(float))
++            return false;
++        data >> value;
++        return std::isfinite(value) && std::abs(value) <= bound;
++    }
++
++    static bool ReadTransform(ByteBuffer& data, bool scale, float bound)
++    {
++        float value;
++        for (unsigned i = 0; i < 3; ++i)
++            if (!ReadFloat(data, value, bound))
++                return false;
++        float norm = 0.f;
++        for (unsigned i = 0; i < 4; ++i)
++        {
++            if (!ReadFloat(data, value, 1.1f))
++                return false;
++            norm += value * value;
++        }
++        if (norm < .9f || norm > 1.1f)
++            return false;
++        if (scale)
++            for (unsigned i = 0; i < 3; ++i)
++                if (!ReadFloat(data, value, 100.f) || value < .001f)
++                    return false;
++        return true;
++    }
++
++    static bool ValidateVisual(ByteBuffer& data, uint32& ride, uint32& sequence, bool& active)
++    {
++        if (data.size() < 44 || data.size() > 8192)
++            return false;
++        data.rpos(2);
++        uint32 sample;
++        uint8 flag, joints;
++        data >> ride >> sequence >> sample >> flag;
++        if (flag > 1 || !ReadTransform(data, false, 1000000.f))
++            return false;
++        active = flag != 0;
++        data >> joints;
++        if (joints > 96 || (!active && joints != 0))
++            return false;
++        std::unordered_set<std::string> names;
++        for (unsigned i = 0; i < joints; ++i)
++        {
++            if (data.rpos() == data.size())
++                return false;
++            uint8 length;
++            data >> length;
++            if (!length || length > 48 || data.size() - data.rpos() < length)
++                return false;
++            std::string name;
++            for (unsigned j = 0; j < length; ++j)
++            {
++                uint8 ch;
++                data >> ch;
++                if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
++                      (ch >= '0' && ch <= '9') || ch == '_'))
++                    return false;
++                name += char(ch);
++            }
++            if (!names.insert(name).second || !ReadTransform(data, true, 10000.f))
++                return false;
++        }
++        return data.rpos() == data.size();
++    }
++
++    static WorldPacket VisualPacket(Player const* sender)
++    {
++        auto const& state = sender->skateVisual;
++        WorldPacket packet(SMSG_SKATECRAFT_VISUAL, 12 + state.payload.size());
++        packet << uint64(sender->GetGUID()) << state.receipt;
++        packet.append(state.payload);
++        return packet;
++    }
++
++    static void RelayVisual(Player* sender)
++    {
++        WorldPacket packet = VisualPacket(sender);
++        ObjectGuidSet observers;
++        if (sender->m_broadcaster)
++            observers = sender->m_broadcaster->GetListenerGuids();
++        else
++            for (auto const& ref : sender->GetMap()->GetPlayers())
++                observers.insert(ref.getSource()->GetObjectGuid());
++        for (ObjectGuid const& guid : observers)
++        {
++            Player* observer = sender->GetMap()->GetPlayer(guid);
++            if (observer && observer != sender && observer->skateVisual.capable &&
++                observer->IsInVisibleList(sender))
++                observer->GetSession()->SendPacket(&packet);
++        }
++    }
++
++    static bool FreshVisual(VisualState const& state, uint32 now)
++    {
++        return state.active && WorldTimer::getMSTimeDiff(state.receipt, now) <= 2000;
++    }
++
++    static bool TakeVisualToken(VisualState& state, uint32 now, bool stopping)
++    {
++        uint32 elapsed = WorldTimer::getMSTimeDiff(state.budgetTime, now);
++        state.tokens = std::min(3.f, state.tokens + float(elapsed) * .03f);
++        state.budgetTime = now;
++        // Reserve one token for immediate off; hello cannot spend that reserve.
++        if (state.tokens < (stopping ? 1.f : 2.f))
++            return false;
++        state.tokens -= 1.f;
++        return true;
++    }
++
++    void ExpireVisual(Player* player)
++    {
++        auto& state = player->skateVisual;
++        if (state.active && !FreshVisual(state, WorldTimer::getMSTime()))
++        {
++            state.active = false;
++            state.payload.clear();
++        }
++    }
++
++    void QueueVisualCreate(Player const* sender, Player* observer, UpdateData& updates)
++    {
++        if (observer != sender && observer->skateVisual.capable &&
++            FreshVisual(sender->skateVisual, WorldTimer::getMSTime()))
++            updates.AddSkateVisual(VisualPacket(sender));
++    }
++
++    void ClearVisual(Player* player)
++    {
++        auto& state = player->skateVisual;
++        if (state.active && player->IsInWorld())
++        {
++            // An off snapshot has the same root and ride, no joints, and the next sequence.
++            state.payload.resize(44);
++            state.payload[14] = 0;
++            state.payload[43] = 0;
++            ++state.sequence;
++            for (unsigned i = 0; i < 4; ++i)
++                state.payload[6 + i] = uint8(state.sequence >> (8 * i));
++            state.receipt = WorldTimer::getMSTime();
++            RelayVisual(player);
++        }
++        bool capable = state.capable;
++        bool blocked = state.hasSequence || state.blocked;
++        uint32 blockedRide = state.hasSequence ? state.ride : state.blockedRide;
++        uint32 ride = state.ride;
++        uint32 sequence = state.sequence;
++        bool hasSequence = state.hasSequence;
++        state = VisualState{};
++        state.capable = capable; // negotiation belongs to the login session, not the map
++        state.blocked = blocked;
++        state.blockedRide = blockedRide;
++        state.ride = ride;
++        state.sequence = sequence;
++        state.hasSequence = hasSequence;
++    }
++
++    void HandleVisual(Player* player, ByteBuffer data, uint32 received)
++    {
++        if (!player || !player->IsInWorld() || player->IsBeingTeleported() ||
++            data.size() < 2 || data.size() > 8192 || data.read<uint8>(0) != 1)
++            return;
++        auto& state = player->skateVisual;
++        uint32 sinceEntry = received - state.mapEntry;
++        if (!sinceEntry || sinceEntry >= 0x80000000u ||
++            WorldTimer::getMSTimeDiff(received, WorldTimer::getMSTime()) > 2000)
++            return;
++        uint8 kind = data.read<uint8>(1);
++        if (kind == 0)
++        {
++            if (data.size() != 2)
++                return;
++            if (!TakeVisualToken(state, received, false))
++                return;
++            state.capable = true;
++            WorldPacket ack(SMSG_SKATECRAFT_VISUAL, 2);
++            ack << uint8(1) << uint8(0);
++            player->GetSession()->SendPacket(&ack);
++            // A client can negotiate after the initial visibility/create batch.
++            for (auto const& ref : player->GetMap()->GetPlayers())
++            {
++                Player* sender = ref.getSource();
++                if (sender != player && FreshVisual(sender->skateVisual, WorldTimer::getMSTime()) &&
++                    player->IsInVisibleList(sender))
++                {
++                    WorldPacket packet = VisualPacket(sender);
++                    player->GetSession()->SendPacket(&packet);
++                }
++            }
++            return;
++        }
++        uint32 ride, sequence;
++        bool active;
++        if (!state.capable || kind != 1 || !ValidateVisual(data, ride, sequence, active))
++            return;
++        uint32 delta = sequence - state.sequence;
++        uint32 rideDelta = ride - state.ride;
++        uint32 blockedDelta = ride - state.blockedRide;
++        if ((state.blocked && (!blockedDelta || blockedDelta >= 0x80000000u)) ||
++            (state.hasSequence && (ride == state.ride ? (!delta || delta >= 0x80000000u) :
++                                                       rideDelta >= 0x80000000u)))
++            return;
++        if (!TakeVisualToken(state, received, state.active && !active))
++            return;
++        state.ride = ride;
++        state.sequence = sequence;
++        state.active = active;
++        state.receipt = received;
++        state.hasSequence = true;
++        state.blocked = false;
++        state.payload.assign(data.contents(), data.contents() + data.size());
++        RelayVisual(player);
++    }
++
++    void ResetVisualSession(Player* player)
++    {
++        ClearVisual(player);
++        player->skateVisual = VisualState{};
++        player->skateVisual.mapEntry = WorldTimer::getMSTime();
++    }
 +
 +    void LoadSkillLine()
 +    {
@@ -243,6 +491,15 @@ index 0000000..b34bca5
 +
 +    bool HandleAddonMessage(Player* player, std::string const& message)
 +    {
++        // A stock-safe probe must succeed before the client sends an extension opcode.
++        if (message == "SKATECRAFT\tV\t1")
++        {
++            WorldPacket response;
++            ChatHandler::BuildChatPacket(response, CHAT_MSG_PARTY, "SKATECRAFT\tCAPS\t1", LANG_ADDON,
++                                         CHAT_TAG_NONE, ObjectGuid());
++            player->GetSession()->SendPacket(&response);
++            return true;
++        }
 +        static std::string const prefix = "SKATECRAFT\t";
 +        if (message.compare(0, prefix.size(), prefix) != 0)
 +            return false;
@@ -277,12 +534,17 @@ index 0000000..b34bca5
 +        return SPELL_CAST_OK;
 +    }
 +}
++
++void WorldSession::HandleSkatecraftVisual(SkatecraftVisualPacket const& packet)
++{
++    Skatecraft::HandleVisual(GetPlayer(), packet.payload, packet.received);
++}
 diff --git a/src/game/Skatecraft.h b/src/game/Skatecraft.h
 new file mode 100644
 index 0000000..a9bf703
 --- /dev/null
 +++ b/src/game/Skatecraft.h
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,87 @@
 +/*
 + * World of Skatecraft: Skateboarding, a secondary profession levelled by landing skate lines.
 + *
@@ -297,13 +559,56 @@ index 0000000..a9bf703
 +
 +#include "Common.h"
 +#include "SpellDefines.h"
++#include "Packet.h"
++#include <vector>
 +
 +class Player;
 +class Unit;
 +class SpellEntry;
++class ByteBuffer;
++class UpdateData;
++
++class SkatecraftVisualPacket final : public ClientPacket
++{
++public:
++    SkatecraftVisualPacket() : ClientPacket(OPCODE_WILL_BE_SET_IN_READ_FUNCTION) {}
++    ByteBuffer payload;
++    uint32 received = 0;
++    void ReadFromWorldPacket(WorldPacket& packet) override
++    {
++        opcode = packet.GetOpcode();
++        received = packet.GetPacketTime();
++        if (packet.size() && packet.size() <= 8192)
++            payload.append(packet.contents(), packet.size());
++        packet.rpos(packet.size());
++    }
++};
 +
 +namespace Skatecraft
 +{
++    // Player lifetime is the session lifetime; every access runs on its map update thread.
++    struct VisualState
++    {
++        bool capable = false;
++        bool active = false;
++        bool hasSequence = false;
++        bool blocked = false;
++        uint32 blockedRide = 0;
++        uint32 mapEntry = 0;
++        uint32 budgetTime = 0;
++        float tokens = 3.f;
++        uint32 ride = 0;
++        uint32 sequence = 0;
++        uint32 receipt = 0;
++        std::vector<uint8> payload;
++    };
++
++    void HandleVisual(Player* player, ByteBuffer data, uint32 received);
++    void ExpireVisual(Player* player);
++    void QueueVisualCreate(Player const* sender, Player* observer, UpdateData& updates);
++    void ClearVisual(Player* player);
++    void ResetVisualSession(Player* player);
++
 +    constexpr uint32 SKILL_SKATEBOARDING = 760;
 +    constexpr uint32 SKILL_MAX = 300;
 +
@@ -327,6 +632,165 @@ index 0000000..a9bf703
 +}
 +
 +#endif
+diff --git a/src/game/PacketBroadcast/PlayerBroadcaster.h b/src/game/PacketBroadcast/PlayerBroadcaster.h
+--- a/src/game/PacketBroadcast/PlayerBroadcaster.h
++++ b/src/game/PacketBroadcast/PlayerBroadcaster.h
+@@ -58,6 +58,15 @@
+
+     void QueuePacket(WorldPacket packet, bool self, ObjectGuid except);
+
++    ObjectGuidSet GetListenerGuids()
++    {
++        std::lock_guard<std::mutex> guard(m_listeners_lock);
++        ObjectGuidSet guids;
++        for (auto const& listener : m_listeners)
++            guids.insert(listener.first);
++        return guids;
++    }
++
+     void AddListener(Player const* player);
+     void RemoveListener(Player const* player);
+
+diff --git a/src/game/Server/Protocol/Opcodes_1_12_1.h b/src/game/Server/Protocol/Opcodes_1_12_1.h
+--- a/src/game/Server/Protocol/Opcodes_1_12_1.h
++++ b/src/game/Server/Protocol/Opcodes_1_12_1.h
+@@ -825,5 +825,8 @@
+     SMSG_CHARACTER_PROFILE                 = 824,
+     SMSG_CHARACTER_PROFILE_REALM_CONNECTED = 825,
+     SMSG_DEFENSE_MESSAGE                   = 827,
+-    NUM_MSG_TYPES                          = 828
++    // World of Skatecraft extension; outside the stock 1.12.1 opcode range.
++    CMSG_SKATECRAFT_VISUAL                 = 0x03f0,
++    SMSG_SKATECRAFT_VISUAL                 = 0x03f1,
++    NUM_MSG_TYPES                          = 0x03f2
+ };
+diff --git a/src/game/Server/Protocol/Opcodes.cpp b/src/game/Server/Protocol/Opcodes.cpp
+--- a/src/game/Server/Protocol/Opcodes.cpp
++++ b/src/game/Server/Protocol/Opcodes.cpp
+@@ -70,6 +70,8 @@ Handlers BuildOpcodeList()
+     }
+
+     // Correspondence between opcodes and their names
++    DEFINE_HANDLER(CMSG_SKATECRAFT_VISUAL, STATUS_LOGGEDIN, PACKET_PROCESS_MAP, &WorldSession::HandleSkatecraftVisual);
++    INVALID_PACKET(SMSG_SKATECRAFT_VISUAL, UnhandleReason::SendByServer);
+     INVALID_PACKET(MSG_NULL_ACTION,                   UnhandleReason::Invalid);
+     INVALID_PACKET(CMSG_BOOTME,                       UnhandleReason::Unhandled);
+     INVALID_PACKET(CMSG_DBLOOKUP,                     UnhandleReason::Unhandled);
+diff --git a/src/game/Server/WorldSession.h b/src/game/Server/WorldSession.h
+--- a/src/game/Server/WorldSession.h
++++ b/src/game/Server/WorldSession.h
+@@ -63,6 +63,7 @@
+ #include "Packets/Taxi.h"
+ #include "Packets/Trade.h"
+ #include "Packets/Warden.h"
++#include "Skatecraft.h"
+
+ #include <memory>
+
+@@ -501,6 +502,7 @@
+         void HandlePlayedTime(NullClientPacket const& packet);
+
+         // Movement
++        void HandleSkatecraftVisual(SkatecraftVisualPacket const& packet);
+         void HandleMoveRootAck(WorldPackets::Movement::MoveRootAck const& packet);
+         void HandleMoveKnockBackAck(WorldPackets::Movement::MoveKnockBackAck const& packet);
+         void HandleMoveTeleportAckOpcode(WorldPackets::Movement::MoveTeleportAck const& packet);
+@@ -846,2 +848,4 @@
+     private:
++        uint32 m_skateCapsReplyTime = 0;
++        bool m_skateCapsReplied = false;
+         // private trade method
+diff --git a/src/game/Objects/Player.h b/src/game/Objects/Player.h
+--- a/src/game/Objects/Player.h
++++ b/src/game/Objects/Player.h
+@@ -1672,3 +1672,4 @@
+     public:
+         void AddToWorld() override;
++        Skatecraft::VisualState skateVisual;
+         void RemoveFromWorld() override;
+diff --git a/src/game/Objects/Player.cpp b/src/game/Objects/Player.cpp
+--- a/src/game/Objects/Player.cpp
++++ b/src/game/Objects/Player.cpp
+@@ -1114,6 +1114,7 @@ void Player::Update(uint32 update_diff, uint32 p_time)
+     if (!IsInWorld())
+         return;
+
++    Skatecraft::ExpireVisual(this);
+     UpdateMirrorTimers(update_diff);
+
+     //used to implement delayed far teleports
+@@ -2195,5 +2196,6 @@ void Player::AddToWorld()
+     // The player should only be added when logging in
+     Unit::AddToWorld();
++    skateVisual.mapEntry = WorldTimer::getMSTime();
+
+     for (int i = PLAYER_SLOT_START; i < PLAYER_SLOT_END; ++i)
+     {
+@@ -2205,5 +2205,6 @@
+ void Player::RemoveFromWorld()
+ {
++    Skatecraft::ClearVisual(this);
+     if (m_transport)
+         SendDestroyGroupMembers(true);
+
+diff --git a/src/game/Objects/Object.cpp b/src/game/Objects/Object.cpp
+--- a/src/game/Objects/Object.cpp
++++ b/src/game/Objects/Object.cpp
+@@ -373,6 +373,9 @@ void Object::BuildCreateUpdateBlockForPlayer(UpdateData& data, Player* target) const
+     updateMask.SetCount(m_valuesCount);
+     _SetCreateBits(updateMask, target);
+     BuildValuesUpdate(updatetype, &buf, &updateMask, target);
++    // Retained extension poses follow the entire create batch on the same socket.
++    if (Player const* sender = ToPlayer())
++        Skatecraft::QueueVisualCreate(sender, target, data);
+ }
+
+ void Object::SendCreateUpdateToPlayer(Player* player)
+diff --git a/src/game/Objects/UpdateData.h b/src/game/Objects/UpdateData.h
+--- a/src/game/Objects/UpdateData.h
++++ b/src/game/Objects/UpdateData.h
+@@ -26,6 +26,7 @@
+
+ #include <memory>
+ #include "ByteBuffer.h"
++#include "WorldPacket.h"
+ #include "ObjectGuid.h"
+ #include "Packets/ObjectUpdate.h"
+
+@@ -80,6 +81,7 @@
+         void AddOutOfRangeGUID(ObjectGuidSet& guids);
+         void AddOutOfRangeGUID(ObjectGuid const& guid);
+         ByteBuffer& AddUpdateBlockAndGetBuffer();
++        void AddSkateVisual(WorldPacket packet) { m_skateVisuals.push_back(std::move(packet)); }
+         void Send(WorldSession* session, bool hasTransport = false);
+         void BuildPacket(std::unique_ptr<WorldPackets::ObjectUpdate::UpdateObject>& packet, bool hasTransport = false);
+         void BuildPacket(std::unique_ptr<WorldPackets::ObjectUpdate::UpdateObject>& packet, UpdatePacket* updPacket, bool hasTransport = false);
+@@ -90,6 +92,7 @@
+         ObjectGuidSet const& GetOutOfRangeGUIDs() const { return m_outOfRangeGUIDs; }
+
+     protected:
++        std::vector<WorldPacket> m_skateVisuals;
+         ObjectGuidSet m_outOfRangeGUIDs;
+         std::list<UpdatePacket> m_datas;
+ };
+diff --git a/src/game/Objects/UpdateData.cpp b/src/game/Objects/UpdateData.cpp
+--- a/src/game/Objects/UpdateData.cpp
++++ b/src/game/Objects/UpdateData.cpp
+@@ -165,10 +165,14 @@ void UpdateData::Send(WorldSession* session, bool hasTransport)
+         session->SendPacket(std::move(data));
+         m_outOfRangeGUIDs.clear();
+     }
++    for (auto const& packet : m_skateVisuals)
++        session->SendPacket(&packet);
++    m_skateVisuals.clear();
+ }
+
+ void UpdateData::Clear()
+ {
++    m_skateVisuals.clear();
+     m_datas.clear();
+     m_outOfRangeGUIDs.clear();
+ }
 diff --git a/src/game/Spells/Spell.cpp b/src/game/Spells/Spell.cpp
 index eaaaaf1..abd1b5d 100644
 --- a/src/game/Spells/Spell.cpp

@@ -63,6 +63,14 @@ fn model() -> Option<&'static Model> {
         .as_ref()
 }
 
+pub(super) fn required_joints() -> Vec<&'static str> {
+    let mut names = vec!["SKATEBOARD_ROOT"];
+    if let Some(model) = model() {
+        names.extend(model.joints.iter().map(|j| j.target.as_str()));
+    }
+    names
+}
+
 /// Marks the board's surface entities, the only transforms [`update`] writes.
 #[derive(Component)]
 pub(super) struct BoardPart;
@@ -71,6 +79,8 @@ pub(super) struct BoardPart;
 #[derive(Resource, Default)]
 pub(super) struct Board {
     parts: Vec<(Entity, Handle<Mesh>)>,
+    remote: std::collections::HashMap<Entity, Vec<(Entity, Handle<Mesh>)>>,
+    materials: Vec<Handle<StandardMaterial>>,
 }
 
 fn spawn(
@@ -79,28 +89,44 @@ fn spawn(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     images: &mut Assets<Image>,
+    shared: &mut Vec<Handle<StandardMaterial>>,
 ) -> Vec<(Entity, Handle<Mesh>)> {
-    let textures: Vec<Handle<Image>> = model
-        .textures
-        .iter()
-        .map(|t| {
-            images.add(Image::new(
-                Extent3d {
-                    width: t.width,
-                    height: t.height,
-                    depth_or_array_layers: 1,
-                },
-                TextureDimension::D2,
-                t.rgba.clone(),
-                TextureFormat::Rgba8UnormSrgb,
-                RenderAssetUsages::RENDER_WORLD,
-            ))
-        })
-        .collect();
+    if shared.is_empty() {
+        let textures: Vec<Handle<Image>> = model
+            .textures
+            .iter()
+            .map(|t| {
+                images.add(Image::new(
+                    Extent3d {
+                        width: t.width,
+                        height: t.height,
+                        depth_or_array_layers: 1,
+                    },
+                    TextureDimension::D2,
+                    t.rgba.clone(),
+                    TextureFormat::Rgba8UnormSrgb,
+                    RenderAssetUsages::RENDER_WORLD,
+                ))
+            })
+            .collect();
+        *shared = model
+            .surfaces
+            .iter()
+            .map(|s| {
+                materials.add(StandardMaterial {
+                    base_color_texture: textures.get(s.texture).cloned(),
+                    unlit: true,
+                    cull_mode: None,
+                    ..default()
+                })
+            })
+            .collect();
+    }
     model
         .surfaces
         .iter()
-        .map(|s| {
+        .enumerate()
+        .map(|(index, s)| {
             let uv = |p: u32| {
                 [
                     half::f16::from_bits((p >> 16) as u16).to_f32(),
@@ -125,16 +151,10 @@ fn spawn(
             );
             mesh.insert_indices(Indices::U32(s.indices.clone()));
             let mesh = meshes.add(mesh);
-            let material = materials.add(StandardMaterial {
-                base_color_texture: textures.get(s.texture).cloned(),
-                unlit: true,
-                cull_mode: None,
-                ..default()
-            });
             let entity = commands
                 .spawn((
                     Mesh3d(mesh.clone()),
-                    MeshMaterial3d(material),
+                    MeshMaterial3d(shared[index].clone()),
                     Transform::default(),
                     Visibility::Hidden,
                     NoFrustumCulling,
@@ -155,87 +175,119 @@ pub(super) fn update(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
     mut parts: Query<(&mut Transform, &mut Visibility), With<BoardPart>>,
+    remotes: Query<(Entity, &super::replication::RemoteSkate)>,
+    status: Res<crate::net::NetStatus>,
 ) {
     let Some(model) = model() else {
         return;
     };
-    if !pose.active {
-        for (entity, _) in &board.parts {
-            if let Ok((_, mut v)) = parts.get_mut(*entity) {
-                *v = Visibility::Hidden;
+    let live: std::collections::HashSet<_> = remotes.iter().map(|(e, _)| e).collect();
+    board.remote.retain(|entity, surfaces| {
+        if live.contains(entity) {
+            true
+        } else {
+            for (part, mesh) in surfaces {
+                commands.entity(*part).despawn();
+                meshes.remove(mesh.id());
             }
+            false
         }
-        return;
-    }
-    if board.parts.is_empty() {
-        board.parts = spawn(
-            model,
-            &mut commands,
-            &mut meshes,
-            &mut materials,
-            &mut images,
-        );
-        return;
-    }
-    let Some(reference) = reference() else {
-        return;
-    };
-    // The board's vertices are authored z up: this turns them y up before the joint's bind.
-    let rb = Mat4::from_cols(Vec4::X, -Vec4::Z, Vec4::Y, Vec4::W);
-    let matrices: Option<Vec<Mat4>> = model
-        .joints
-        .iter()
-        .map(|j| {
-            let posed = pose.bone(&j.target)?;
-            let bind = reference.iter().find(|b| b.name == j.target)?;
-            Some(posed * rb * Mat4::from_cols_array(&bind.inverse_bind))
-        })
-        .collect();
-    let Some(matrices) = matrices else {
-        static WARNED: std::sync::Once = std::sync::Once::new();
-        WARNED.call_once(|| warn!("skate board: a board joint is missing from the pose"));
-        return;
-    };
-    // Vertices relative to the deck, so no vertex is a far-off world coordinate.
-    let anchor = pose.bone("SKATEBOARD_ROOT").map_or(pose.origin, |m| {
-        from_skate(m.w_axis.truncate(), pose.origin)
     });
-    for (surface, (entity, handle)) in model.surfaces.iter().zip(&board.parts) {
-        let Some(mesh) = meshes.get_mut(handle) else {
-            continue;
-        };
-        let mut positions = Vec::with_capacity(surface.vertices.len());
-        let mut normals = Vec::with_capacity(surface.vertices.len());
-        for v in &surface.vertices {
-            let mut p = Vec3::ZERO;
-            let mut n = Vec3::ZERO;
-            for i in 0..4 {
-                let Some(m) = matrices.get(v.joints[i]) else {
-                    continue;
-                };
-                p += m.transform_point3(Vec3::from_array(v.position)) * v.weights[i];
-                n += m.transform_vector3(Vec3::from_array(v.normal)) * v.weights[i];
+    let Board {
+        parts: local,
+        remote,
+        materials: shared,
+    } = &mut *board;
+    for (entity, _) in &remotes {
+        remote.entry(entity).or_default();
+    }
+    for (pose, surfaces) in std::iter::once((&*pose, &mut *local)).chain(
+        remote.iter_mut().filter_map(|(entity, surfaces)| {
+            remotes
+                .get(*entity)
+                .ok()
+                .map(|(_, remote_pose)| (&remote_pose.pose, surfaces))
+        }),
+    ) {
+        if !pose.active || !status.connected {
+            for (entity, _) in &*surfaces {
+                if let Ok((_, mut v)) = parts.get_mut(*entity) {
+                    *v = Visibility::Hidden;
+                }
             }
-            positions.push((from_skate(p, pose.origin) - anchor).to_array());
-            normals.push(n.normalize_or(Vec3::Y).to_array());
+            continue;
         }
-        if std::env::var_os("WOW_SKATE_DEBUG").is_some() {
-            let lo = positions
-                .iter()
-                .fold(Vec3::MAX, |a, p| a.min(Vec3::from_array(*p)));
-            let hi = positions
-                .iter()
-                .fold(Vec3::MIN, |a, p| a.max(Vec3::from_array(*p)));
-            info!(
-                "skate board debug: surface {} spans {:?}..{:?} at {:?}",
-                surface.texture, lo, hi, anchor
+        if surfaces.is_empty() {
+            *surfaces = spawn(
+                model,
+                &mut commands,
+                &mut meshes,
+                &mut materials,
+                &mut images,
+                shared,
             );
+            continue;
         }
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-        if let Ok((mut t, mut vis)) = parts.get_mut(*entity) {
-            t.translation = anchor;
-            *vis = Visibility::Visible;
+        let Some(reference) = reference() else {
+            return;
+        };
+        // The board's vertices are authored z up: this turns them y up before the joint's bind.
+        let rb = Mat4::from_cols(Vec4::X, -Vec4::Z, Vec4::Y, Vec4::W);
+        let matrices: Option<Vec<Mat4>> = model
+            .joints
+            .iter()
+            .map(|j| {
+                let posed = pose.bone(&j.target)?;
+                let bind = reference.iter().find(|b| b.name == j.target)?;
+                Some(posed * rb * Mat4::from_cols_array(&bind.inverse_bind))
+            })
+            .collect();
+        let Some(matrices) = matrices else {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| warn!("skate board: a board joint is missing from the pose"));
+            return;
+        };
+        // Vertices relative to the deck, so no vertex is a far-off world coordinate.
+        let anchor = pose.bone("SKATEBOARD_ROOT").map_or(pose.origin, |m| {
+            from_skate(m.w_axis.truncate(), pose.origin)
+        });
+        for (surface, (entity, handle)) in model.surfaces.iter().zip(&*surfaces) {
+            let Some(mesh) = meshes.get_mut(handle) else {
+                continue;
+            };
+            let mut positions = Vec::with_capacity(surface.vertices.len());
+            let mut normals = Vec::with_capacity(surface.vertices.len());
+            for v in &surface.vertices {
+                let mut p = Vec3::ZERO;
+                let mut n = Vec3::ZERO;
+                for i in 0..4 {
+                    let Some(m) = matrices.get(v.joints[i]) else {
+                        continue;
+                    };
+                    p += m.transform_point3(Vec3::from_array(v.position)) * v.weights[i];
+                    n += m.transform_vector3(Vec3::from_array(v.normal)) * v.weights[i];
+                }
+                positions.push((from_skate(p, pose.origin) - anchor).to_array());
+                normals.push(n.normalize_or(Vec3::Y).to_array());
+            }
+            if std::env::var_os("WOW_SKATE_DEBUG").is_some() {
+                let lo = positions
+                    .iter()
+                    .fold(Vec3::MAX, |a, p| a.min(Vec3::from_array(*p)));
+                let hi = positions
+                    .iter()
+                    .fold(Vec3::MIN, |a, p| a.max(Vec3::from_array(*p)));
+                info!(
+                    "skate board debug: surface {} spans {:?}..{:?} at {:?}",
+                    surface.texture, lo, hi, anchor
+                );
+            }
+            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+            if let Ok((mut t, mut vis)) = parts.get_mut(*entity) {
+                t.translation = anchor;
+                *vis = Visibility::Visible;
+            }
         }
     }
 }

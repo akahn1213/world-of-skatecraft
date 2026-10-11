@@ -8,6 +8,7 @@ mod board;
 mod export;
 mod profession;
 mod rails;
+pub(crate) mod replication;
 mod rig;
 mod score;
 mod sound;
@@ -96,6 +97,7 @@ pub(crate) struct SkatePose {
     pub(crate) root: Mat4,
     pub(crate) bones: Vec<Mat4>,
     pub(crate) names: Vec<String>,
+    pub(crate) sample_ms: u32,
 }
 
 impl SkatePose {
@@ -583,6 +585,7 @@ fn update(
                 audio.reset();
                 audio.observe(&f.state, f.velocity);
                 present(f, host.origin, &mut drive, &mut pose);
+                pose.sample_ms = (time.elapsed_secs_f64() * 1000.0) as u32;
             }
             Reply::Pose(epoch, f) if epoch == host.epoch && drive.active => {
                 if f.tick / 120 != host.logged_tick / 120 {
@@ -629,6 +632,7 @@ fn update(
                 }
                 audio.observe(&f.state, f.velocity);
                 present(f, host.origin, &mut drive, &mut pose);
+                pose.sample_ms = (time.elapsed_secs_f64() * 1000.0) as u32;
             }
             Reply::Error(e) => {
                 warn!("skate stopped: {e}");
@@ -738,6 +742,7 @@ fn start(
 }
 
 pub(crate) fn plugin(app: &mut App) {
+    replication::register(app);
     app.init_resource::<Host>()
         .init_resource::<SkateDrive>()
         .init_resource::<SkatePose>()
@@ -751,17 +756,37 @@ pub(crate) fn plugin(app: &mut App) {
         .add_systems(Startup, (preload, score::spawn))
         .add_systems(
             Update,
-            (update, board::update, sound::update, score::draw)
+            (
+                update,
+                replication::send_local,
+                sound::update,
+                score::draw,
+            )
                 .chain()
                 .in_set(WorldStage::Input)
                 .before(crate::player::PlayerControlSet)
                 .in_set(crate::char_select::InWorldGated),
         )
         .add_systems(
+            Update,
+            board::update
+                .in_set(WorldStage::Input)
+                .after(update)
+                .before(crate::player::PlayerControlSet),
+        )
+        .add_systems(
             PostUpdate,
             // The last writer of our pose: after the body twist, which would turn the retargeted
             // spine and head again, the global sequences and the terrain conform.
             rig::retarget
+                .in_set(benilla_world::rig_anim::PosePost)
+                .after(crate::creature_anim::apply_body_twist)
+                .after(benilla_world::rig_anim::apply_global_sequences)
+                .after(crate::entities::conform_units),
+        )
+        .add_systems(
+            PostUpdate,
+            rig::retarget_remote
                 .in_set(benilla_world::rig_anim::PosePost)
                 .after(crate::creature_anim::apply_body_twist)
                 .after(benilla_world::rig_anim::apply_global_sequences)

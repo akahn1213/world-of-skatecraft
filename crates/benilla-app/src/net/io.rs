@@ -838,6 +838,9 @@ fn writer_loop(
             recv(cmd_rx) -> cmd => {
                 let Ok(cmd) = cmd else { return }; // all app senders dropped → app exit
                 let Some(w) = writer.as_mut() else {
+                    if let ClientCommand::Skate(slot) = &cmd {
+                        slot.lock_recover().take();
+                    }
                     // No live writer: the command is dropped, and both lines name it.
                     if benilla_assets::trace::enabled() {
                         benilla_assets::trace::line(
@@ -852,6 +855,12 @@ fn writer_loop(
                     continue;
                 };
                 let result = match cmd {
+                    ClientCommand::Skate(slot) => {
+                        match slot.lock_recover().take() {
+                            Some(body) => w.skate(&body),
+                            None => Ok(()),
+                        }
+                    }
                     ClientCommand::Move {
                         kind,
                         flags,

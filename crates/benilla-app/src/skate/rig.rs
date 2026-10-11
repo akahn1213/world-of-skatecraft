@@ -240,6 +240,33 @@ pub(super) struct Held {
     rotations: Vec<Quat>,
 }
 
+pub(super) fn required_joint(name: &str) -> bool {
+    matches!(
+        name,
+        "HIPS"
+            | "SPINE"
+            | "SPINE2"
+            | "NECK"
+            | "HEAD"
+            | "LEFTSHOULDER"
+            | "RIGHTSHOULDER"
+            | "LEFTARM"
+            | "RIGHTARM"
+            | "LEFTFOREARM"
+            | "RIGHTFOREARM"
+            | "LEFTHAND"
+            | "RIGHTHAND"
+            | "LEFTUPLEG"
+            | "RIGHTUPLEG"
+            | "LEFTLEG"
+            | "RIGHTLEG"
+            | "LEFTFOOT"
+            | "RIGHTFOOT"
+            | "LEFTTOEBASE"
+            | "RIGHTTOEBASE"
+    )
+}
+
 /// SpineLow's unmapped children off to a side (the hip sheath points, attachments 32 and 33)
 /// ride the Waist bone instead.
 fn hip_riders(
@@ -308,6 +335,42 @@ pub(super) fn retarget(
         debug_once(&format!("no single embodied rig ({count})"));
         return;
     };
+    apply_pose(
+        &pose, &mut plan, &mut held, unit_t, unit_g, &mut rig, &globals,
+    );
+}
+
+pub(super) fn retarget_remote(
+    mut units: Query<
+        (
+            &Transform,
+            &GlobalTransform,
+            &mut RigPose,
+            &mut super::replication::RemoteSkate,
+        ),
+        Without<crate::net::Embodied>,
+    >,
+    globals: Query<&GlobalTransform>,
+) {
+    for (unit_t, unit_g, mut rig, mut remote) in &mut units {
+        let super::replication::RemoteSkate {
+            pose, plan, held, ..
+        } = &mut *remote;
+        if pose.active {
+            apply_pose(pose, plan, held, unit_t, unit_g, &mut rig, &globals);
+        }
+    }
+}
+
+fn apply_pose(
+    pose: &SkatePose,
+    plan: &mut Plan,
+    held: &mut Held,
+    unit_t: &Transform,
+    unit_g: &GlobalTransform,
+    rig: &mut RigPose,
+    globals: &Query<&GlobalTransform>,
+) {
     if rig.key_bones.is_empty() {
         debug_once("rig has no key bones");
         return;
@@ -321,7 +384,7 @@ pub(super) fn retarget(
     let offset = unit_g.affine().inverse() * frame_g.affine();
     let model_from_world = Mat4::from(unit_t.compute_affine() * offset).inverse();
 
-    let plan = plan.for_rig(&rig);
+    let plan = plan.for_rig(rig);
     let n = plan.pivots.len();
     if rig.locals.len() != n {
         debug_once("locals/pivots length mismatch");

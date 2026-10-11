@@ -5,6 +5,7 @@ pub mod auth;
 pub mod events;
 pub mod guid;
 pub mod messages;
+pub mod skate;
 pub mod wire;
 pub mod world;
 pub use auth::AuthReject;
