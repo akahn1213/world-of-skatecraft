@@ -222,6 +222,11 @@ fn parse_server_body(
 ) -> io::Result<ServerPacket> {
     let mut r: &[u8] = cursor;
     let packet = match opcode {
+        crate::skate::SMSG_SKATE => {
+            let packet = ServerPacket::Skate(crate::skate::decode_relay(r)?);
+            r = &[];
+            packet
+        }
         opcode::SMSG_AUTH_CHALLENGE => ServerPacket::AuthChallenge {
             server_seed: read_u32_le(&mut r)?,
         },

@@ -70,6 +70,11 @@ pub struct WorldWriter {
 }
 
 impl WorldWriter {
+    /// Only the negotiated extension uses this; validate even locally produced payloads.
+    pub fn skate(&mut self, body: &[u8]) -> Result<()> {
+        crate::skate::decode(body)?;
+        self.send(crate::skate::CMSG_SKATE, body)
+    }
     /// Frame, encrypt and write one packet: the sole write path every verb goes through.
     fn send(&mut self, opcode: u16, body: &[u8]) -> Result<()> {
         let sent = send_packet(&mut self.stream, Some(&mut self.encrypter), opcode, body);

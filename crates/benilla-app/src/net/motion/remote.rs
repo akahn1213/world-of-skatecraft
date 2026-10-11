@@ -350,7 +350,11 @@ pub(in crate::net) fn extrapolate_remote_units(
             // player's ride the pose, so the union is the reference's one `CMovement+0x40` word.
             Option<&crate::net::UnitMoveModes>,
         ),
-        (Without<Spline>, Without<ActiveMover>),
+        (
+            Without<Spline>,
+            Without<ActiveMover>,
+            Without<crate::skate::replication::ReplicatedSkating>,
+        ),
     >,
 ) {
     use crate::creature_anim::{ease_strafe_yaw, strafe_body_offset, wrap_pi};

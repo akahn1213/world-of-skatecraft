@@ -64,6 +64,47 @@ Afterwards, start the game with `./play.sh`.
 - Update: `git pull`, then `setup/setup.sh` again (it only rebuilds).
 - New account or new password: `python3 tools/make_account.py <name> <password>`.
 
+### Multiplayer skating verification
+
+Use the same client revision on both machines, each with its own converted Skate 3 data, and
+a server built with this checkout's `setup/vmangos/skatecraft.patch`. On Linux, rebuild with
+`setup/build-server.sh`, then restart with
+`docker compose -p world-of-skatecraft -f server/compose.yaml up -d`.
+The image tag includes the patch hash, so a changed patch selects a new image.
+
+Both clients must connect to the same server. `WOW_HOST` names the authentication server; its
+advertised realm address must also be reachable from each machine. Do not expose an unsecured
+development server to the public internet.
+
+Use two distinct accounts and characters: sharing an account can disconnect the other player.
+For unattended probes, each checkout must declare its own test identity, set `WOW_UNATTENDED=1`
+and `WOW_NOSOUND=1`, and obey `docs/METHOD.md`. Never use a player's active account.
+
+Verify these cases with one skater and one observer, then exchange roles:
+
+- Summon, stand still, push, turn, dismiss; the observer's board and pose follow the correct
+  character, and ordinary walking resumes after dismissal.
+- Jump, grind, flip and bail; root height and board-to-feet alignment follow the sender rather
+  than WoW's walking speed or the observer's terrain collision.
+- Enter visibility while the other character is already skating; the observer receives the
+  current pose without requiring another summon.
+- Teleport, change maps, log out and reconnect; no old board or pose survives the transition.
+- Interrupt updates; remote skating expires rather than extrapolating indefinitely.
+- Observe with an older client, and connect a new client to an unpatched server; ordinary WoW
+  movement remains usable without extension packets being sent to unsupported observers.
+- Repeat with different races, gear and non-GM accounts. The default setup creates a GM, which
+  is not evidence that skating passes normal movement-anticheat checks.
+
+The relay does not bypass movement anticheat. A server configured to reject excessive speed
+or airborne acceleration may still reject ordinary skating movement, affecting world position
+and who can see the skater. Turning off the visible GM flag is not the same as using an
+unprivileged account. Check the deployed server configuration and test an ordinary account
+before treating multiplayer movement as verified.
+
+Measure snapshot age, packet bytes, root position error and board-to-feet offset rather than
+judging timing from a video alone. Visual replication is approximate and does not promise
+identical collisions, remote audio or authoritative trick results.
+
 ## 5. Windows (experimental)
 
 The Windows setup does the same steps as the Linux one, but nobody has run it on a real Windows

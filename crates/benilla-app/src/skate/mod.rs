@@ -8,6 +8,7 @@ mod board;
 mod export;
 mod profession;
 mod rails;
+pub(crate) mod replication;
 mod rig;
 mod score;
 mod sound;
@@ -20,8 +21,6 @@ use benilla_world::schedule::WorldStage;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use skate_host::bridge::{ControllerTransport, InputFrame, PreparedCollision, Session};
-
-use crate::net::NetHandlerApp;
 
 /// The engine's unit is the meter; ours is the yard.
 const METERS_PER_YARD: f32 = 0.9144;
@@ -96,6 +95,7 @@ pub(crate) struct SkatePose {
     pub(crate) root: Mat4,
     pub(crate) bones: Vec<Mat4>,
     pub(crate) names: Vec<String>,
+    pub(crate) sample_ms: u32,
 }
 
 impl SkatePose {
@@ -135,6 +135,7 @@ enum Reply {
 
 /// One engine pose, out of the engine's own math types (its Bevy is not ours).
 struct Frame {
+    sample_ms: u32,
     root: Mat4,
     bones: Vec<Mat4>,
     names: Vec<String>,
@@ -154,6 +155,13 @@ struct Frame {
 fn frame(p: skate_host::bridge::Pose) -> Frame {
     let m = |c: [f32; 16]| Mat4::from_cols_array(&c);
     Frame {
+        sample_ms: {
+            static CLOCK: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+            CLOCK
+                .get_or_init(std::time::Instant::now)
+                .elapsed()
+                .as_millis() as u32
+        },
         root: m(p.root.to_cols_array()),
         bones: p.bones.iter().map(|b| m(b.to_cols_array())).collect(),
         names: p.names,
@@ -397,6 +405,7 @@ fn stop(host: &mut Host, drive: &mut SkateDrive, pose: &mut SkatePose) {
 }
 
 fn present(frame: Frame, origin: Vec3, drive: &mut SkateDrive, pose: &mut SkatePose) {
+    pose.sample_ms = frame.sample_ms;
     drive.pos = from_skate(frame.root.w_axis.truncate(), origin);
     let flat = Vec3::new(frame.velocity.x, 0.0, frame.velocity.z);
     drive.speed = flat.length() / METERS_PER_YARD;
@@ -738,20 +747,24 @@ fn start(
 }
 
 pub(crate) fn plugin(app: &mut App) {
+    replication::register(app);
+    score::register(app);
     app.init_resource::<Host>()
         .init_resource::<SkateDrive>()
         .init_resource::<SkatePose>()
         .init_resource::<board::Board>()
         .init_resource::<sound::SkateAudio>()
         .init_resource::<score::SkateScore>()
-        .net_handler(
-            benilla_protocol::SessionEventKind::XpGain,
-            score::on_xp_gain,
-        )
         .add_systems(Startup, (preload, score::spawn))
         .add_systems(
             Update,
-            (update, board::update, sound::update, score::draw)
+            (
+                update,
+                replication::send_local,
+                board::update,
+                sound::update,
+                score::draw,
+            )
                 .chain()
                 .in_set(WorldStage::Input)
                 .before(crate::player::PlayerControlSet)
@@ -762,6 +775,14 @@ pub(crate) fn plugin(app: &mut App) {
             // The last writer of our pose: after the body twist, which would turn the retargeted
             // spine and head again, the global sequences and the terrain conform.
             rig::retarget
+                .in_set(benilla_world::rig_anim::PosePost)
+                .after(crate::creature_anim::apply_body_twist)
+                .after(benilla_world::rig_anim::apply_global_sequences)
+                .after(crate::entities::conform_units),
+        )
+        .add_systems(
+            PostUpdate,
+            rig::retarget_remote
                 .in_set(benilla_world::rig_anim::PosePost)
                 .after(crate::creature_anim::apply_body_twist)
                 .after(benilla_world::rig_anim::apply_global_sequences)
