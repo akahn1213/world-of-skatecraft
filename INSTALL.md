@@ -6,6 +6,30 @@ step when you run it again.
 
 ## 1. Before you start
 
+### Tarnished action table
+
+This is an optional development setup, not a playable Tarnished installer. Supply your own
+ELDEN RING install and unpack its containers with UXM/WitchyBND into a separate folder.
+Set `ER_FILES` to that folder (`chr/` and `regulation-bin/*.param`) and `ER_GAME_DIR` to
+the game's `Game` folder containing `oo2core_6_win64.dll`. The pinned extractor needs
+`c0000.anibnd.dcx`, `c0000_a00_hi`, and the `a2x`, `a3x`, `a4x`, `a5x` animation packs.
+On Linux/macOS also supply Wine and set `WINE_PYTHON` to a Windows `python.exe`; setup
+does not install either.
+
+From the repository root:
+
+```sh
+python3 setup/tarnished.py
+cargo test -p benilla-tarnished --features er-data
+```
+
+The script downloads only the extraction tools from the vendor's pinned revision and writes
+tools, scratch and the generated table beneath ignored `.setup/tarnished/`, outside the input
+folders. It reads the install, never writes to it. `ER_EXTRACTED` can instead name an existing
+generated Rust action table; only use a trusted local table because Cargo compiles it as code.
+Nothing generated may be committed. Animation and sound baking and a runtime profile generator
+are not provided by this command. No live combat run is claimed.
+
 You need:
 
 | | Where it comes from |

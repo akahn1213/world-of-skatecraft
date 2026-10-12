@@ -12,7 +12,7 @@
 //! (`third_party/elden-ring-combat-rewrite`), which is driven by an action table generated from
 //! the player's own copy of the game. That table is never in the repository. The `er-data`
 //! feature wires the real simulation in behind the [`Backend`] trait; without it the feature is
-//! unavailable at runtime with a precise message ([`unavailable`]), and an ordinary build touches
+//! unavailable to a host with a precise message ([`unavailable`]), and an ordinary build touches
 //! no game-derived data.
 
 pub mod attack;
@@ -20,6 +20,10 @@ pub mod defence;
 pub mod profile;
 pub mod scale;
 pub mod weapon;
+#[cfg(feature = "er-data")]
+include!(concat!(env!("OUT_DIR"), "/sim_entry.rs"));
+#[cfg(feature = "er-data")]
+pub mod reference;
 
 pub use weapon::{ErWeapon, Hand, Loadout, Offhand};
 
@@ -41,7 +45,8 @@ pub fn unavailable() -> &'static str {
     "Tarnished combat is unavailable: this build has no ELDEN RING action table.\n\
      It is generated from your own copy of the game and is never shipped. Follow the \
      \"Tarnished combat\" section of README.md / INSTALL.md to unpack your ELDEN RING files and \
-     run the setup, then build benilla with the `er-data` feature. The rest of benilla, \
+     run python3 setup/tarnished.py, then build benilla-tarnished with the `er-data` feature. \
+     The app/server combat loop is not yet integrated. The rest of benilla, \
      including skating, is unaffected."
 }
 
@@ -61,7 +66,7 @@ pub trait Backend {
     /// The motion value of the attack currently in its active frames, for damage scaling.
     fn active_motion_value(&self) -> Option<f32>;
     /// The guard held this instant, if any, for the defence resolver.
-    fn guard(&self) -> Option<defence::Guard>;
+    fn guard(&self, stamina_damage: f32, source_facing_dot: f32) -> Option<defence::Guard>;
     /// A dodge-roll i-frame is open this instant.
     fn invincible(&self) -> bool;
 }
@@ -77,7 +82,7 @@ pub struct BackendInput {
     pub heavy_attack: bool,
     pub guard: bool,
     pub dodge: bool,
-    /// Seconds since the previous tick, for a variable-rate host to sub-step onto 60 Hz.
+    /// Host timestamp delta; the reference backend still advances exactly one 60 Hz tick per call.
     pub dt: f32,
 }
 

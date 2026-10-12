@@ -91,7 +91,10 @@ pub fn resolve_swing(
 ) -> Vec<AttackTarget> {
     let mut out = Vec::new();
     for body in bodies {
-        if !swing.touches(body) {
+        if body.guid == 0
+            || out.iter().any(|hit: &AttackTarget| hit.guid == body.guid)
+            || !swing.touches(body)
+        {
             continue;
         }
         let outcome = outcome_for(body.guid);
@@ -162,6 +165,22 @@ mod tests {
             |_| Outcome::default(),
         );
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn duplicate_or_zero_guid_candidates_are_not_damage_multipliers() {
+        let hits = resolve_swing(
+            &straight_blade(0.0, 2.0, 1.0),
+            WowWeapon {
+                min_damage: 10.0,
+                max_damage: 10.0,
+            },
+            1.0,
+            &[body(0, 0.5), body(1, 0.5), body(1, 0.5)],
+            |_| Outcome::default(),
+        );
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].guid, 1);
     }
 
     #[test]

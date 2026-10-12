@@ -23,6 +23,19 @@ fully offline against a local server.
 
 ## What you need
 
+### Tarnished combat (experimental, not playable yet)
+
+`benilla-tarnished` contains weapon mapping, swept contacts and defender policy. Its optional
+`er-data` adapter drives the pure simulation pinned at
+`177a3b5ec14a9bde39b9ab458a3400b4038224e3`. The app and vmangos do **not** yet activate
+Tarnished combat; enabling that Cargo feature alone does not add controller combat or damage.
+There has been no live two-client combat verification.
+
+Generate the action table from your own ELDEN RING files with `python3 setup/tarnished.py`;
+see [INSTALL.md](INSTALL.md#tarnished-action-table). No ELDEN RING data is distributed.
+The reference is this pinned rewrite, which explicitly marks several tuning constants as
+estimates; those are not verified facts about the original ELDEN RING client.
+
 - **Linux**, or **Windows (experimental, testers wanted)**: the Windows setup is new and untested
   on real machines; please report how it goes (see Help).
 - **World of Warcraft 1.12.1**, English client (build 5875).

@@ -237,6 +237,23 @@ mod defence_tag {
 }
 
 impl DefenceVerdict {
+    /// Validate the correlated envelope, without re-rolling the designated client's defence.
+    /// The server must additionally bind the authenticated session to the pending defender and
+    /// enforce its replay/deadline policy before applying ordinary damage consequences.
+    pub fn validate_for(&self, incoming: &Incoming) -> io::Result<()> {
+        if self.attack_id != incoming.attack_id || self.source_guid != incoming.source_guid {
+            return Err(invalid());
+        }
+        match self.outcome {
+            DefenceOutcome::Dodge | DefenceOutcome::Parry if !incoming.melee => Err(invalid()),
+            DefenceOutcome::Block {
+                absorbed, taken, ..
+            } if absorbed.checked_add(taken) != Some(incoming.amount) => Err(invalid()),
+            DefenceOutcome::Hit { taken } if taken != incoming.amount => Err(invalid()),
+            _ => Ok(()),
+        }
+    }
+
     fn encode_into(&self, out: &mut Vec<u8>) {
         out.extend(self.sequence.to_le_bytes());
         out.extend(self.attack_id.to_le_bytes());
@@ -678,6 +695,52 @@ mod tests {
                 verdict: attack(),
             }
         );
+    }
+
+    #[test]
+    fn defender_reply_preserves_correlated_damage_and_melee_eligibility() {
+        let incoming = Incoming {
+            attack_id: 9,
+            source_guid: 7,
+            school: 0,
+            amount: 100,
+            melee: true,
+        };
+        let mut reply = DefenceVerdict {
+            sequence: 1,
+            attack_id: 9,
+            source_guid: 7,
+            outcome: DefenceOutcome::Block {
+                absorbed: 60,
+                taken: 40,
+                stamina_cost: 11,
+                guard_broken: false,
+            },
+        };
+        assert!(reply.validate_for(&incoming).is_ok());
+        reply.attack_id = 8;
+        assert!(reply.validate_for(&incoming).is_err());
+        reply.attack_id = 9;
+        reply.source_guid = 6;
+        assert!(reply.validate_for(&incoming).is_err());
+        reply.source_guid = 7;
+        reply.outcome = DefenceOutcome::Hit { taken: 99 };
+        assert!(reply.validate_for(&incoming).is_err());
+        reply.outcome = DefenceOutcome::Block {
+            absorbed: u32::MAX,
+            taken: 101,
+            stamina_cost: 1,
+            guard_broken: true,
+        };
+        assert!(reply.validate_for(&incoming).is_err());
+        reply.outcome = DefenceOutcome::Dodge;
+        assert!(reply.validate_for(&incoming).is_ok());
+        assert!(reply
+            .validate_for(&Incoming {
+                melee: false,
+                ..incoming
+            })
+            .is_err());
     }
 
     #[test]

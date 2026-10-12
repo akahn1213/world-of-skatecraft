@@ -12,19 +12,15 @@
 
 use benilla_protocol::tarnished::{DefenceOutcome, Incoming};
 
-/// Share of a hit's stamina damage a raised guard still takes (`GUARD_STAMINA_TAKEN`).
+/// Upstream ESTIMATE, not an extracted ER fact (`data.rs::GUARD_STAMINA_TAKEN`).
 pub const GUARD_STAMINA_TAKEN: f32 = 0.55;
-/// Half-angle of the frontal arc a guard covers (`GUARD_ARC_DEG`).
+/// Upstream ESTIMATE, not an extracted ER fact (`data.rs::GUARD_ARC_DEG`).
 pub const GUARD_ARC_DEG: f32 = 80.0;
-/// The physical school index a guard fully absorbs by default; spells leak through.
+/// The physical school index.
 pub const SCHOOL_PHYSICAL: u8 = 0;
-/// ESTIMATE: stamina a guard spends is scaled from the blow's damage, since the forwarded
-/// [`Incoming`] carries damage, not the attacker's stamina figure. Tuned so a solid hit costs a
-/// handful of stamina; a fork with a generated profile can override it.
-pub const GUARD_STAMINA_PER_DAMAGE: f32 = 0.2;
 
-/// The shield's or guard's absorption, per school. Physical defaults to full (the rewrite negates
-/// a standing guard's hit entirely); a fork can lower it for a buckler or raise magic cover.
+/// The shield's or guard's absorption, per school. The pinned rewrite negates a raised guard's
+/// hit entirely without discriminating by school; a host may supply explicit partial absorption.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Absorption {
     pub physical: f32,
@@ -36,7 +32,7 @@ impl Default for Absorption {
         // The rewrite's shield fully negates a blocked hit's HP damage.
         Self {
             physical: 1.0,
-            magic: 0.0,
+            magic: 1.0,
         }
     }
 }
@@ -57,6 +53,8 @@ impl Absorption {
 pub struct Guard {
     /// Stamina available to spend, in points.
     pub stamina: f32,
+    /// This incoming action's reference stamina damage, NOT its WoW HP damage.
+    pub stamina_damage: f32,
     pub absorption: Absorption,
     /// Cosine of the angle between the defender's facing and the direction to the source; a blow
     /// outside the frontal arc is not covered. `1.0` is dead ahead.
@@ -65,7 +63,15 @@ pub struct Guard {
 
 impl Guard {
     fn covers(&self) -> bool {
-        self.source_facing_dot >= GUARD_ARC_DEG.to_radians().cos()
+        self.stamina.is_finite()
+            && self.stamina >= 0.0
+            && self.stamina_damage.is_finite()
+            && self.stamina_damage >= 0.0
+            && self.absorption.physical.is_finite()
+            && self.absorption.magic.is_finite()
+            && self.source_facing_dot.is_finite()
+            && (-1.0..=1.0).contains(&self.source_facing_dot)
+            && self.source_facing_dot >= GUARD_ARC_DEG.to_radians().cos()
     }
 }
 
@@ -74,6 +80,8 @@ impl Guard {
 pub struct DefenceState {
     /// A dodge-roll's invincibility window is open.
     pub iframe: bool,
+    /// Host checked facing, status and attack type against stock WoW avoidance eligibility.
+    pub passive_eligible: bool,
     /// Passive WoW dodge chance, 0..1 (melee only).
     pub dodge_chance: f32,
     /// Passive WoW parry chance, 0..1 (melee only, and only when the defender can parry).
@@ -94,7 +102,7 @@ pub fn resolve(incoming: &Incoming, state: &DefenceState, roll: f32) -> DefenceO
 
     // 2. Passive WoW avoidance, melee only, the stock percentages. Dodge then parry share the
     //    one roll so their chances add rather than compound.
-    if incoming.melee {
+    if incoming.melee && state.passive_eligible && roll.is_finite() && (0.0..=1.0).contains(&roll) {
         let dodge = state.dodge_chance.clamp(0.0, 1.0);
         if roll < dodge {
             return DefenceOutcome::Dodge;
@@ -112,9 +120,9 @@ pub fn resolve(incoming: &Incoming, state: &DefenceState, roll: f32) -> DefenceO
         if guard.covers() {
             let absorb_frac = guard.absorption.for_school(incoming.school);
             let absorbed = (incoming.amount as f32 * absorb_frac).round() as u32;
-            let stamina_cost_f =
-                incoming.amount as f32 * GUARD_STAMINA_PER_DAMAGE * GUARD_STAMINA_TAKEN;
-            let guard_broken = guard.stamina < stamina_cost_f;
+            let stamina_cost_f = guard.stamina_damage * GUARD_STAMINA_TAKEN;
+            // receive_hit breaks at zero, including an exactly exhausted bar.
+            let guard_broken = guard.stamina <= stamina_cost_f;
             let stamina_cost = stamina_cost_f.min(guard.stamina).round().max(0.0) as u16;
             let taken = incoming.amount.saturating_sub(absorbed);
             return DefenceOutcome::Block {
@@ -153,6 +161,7 @@ mod tests {
             dodge_chance: 0.0,
             guard: Some(Guard {
                 stamina: 100.0,
+                stamina_damage: 20.0,
                 absorption: Absorption::default(),
                 source_facing_dot: 1.0,
             }),
@@ -165,6 +174,7 @@ mod tests {
     fn passive_dodge_then_parry_share_one_roll() {
         let state = DefenceState {
             dodge_chance: 0.1,
+            passive_eligible: true,
             parry_chance: 0.1,
             can_parry: true,
             ..Default::default()
@@ -182,6 +192,7 @@ mod tests {
     fn dodge_and_parry_do_not_apply_to_spells() {
         let state = DefenceState {
             dodge_chance: 0.9,
+            passive_eligible: true,
             parry_chance: 0.9,
             can_parry: true,
             ..Default::default()
@@ -198,10 +209,25 @@ mod tests {
     }
 
     #[test]
+    fn ineligible_melee_does_not_roll_passive_avoidance() {
+        let state = DefenceState {
+            dodge_chance: 1.0,
+            parry_chance: 1.0,
+            can_parry: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve(&melee(100), &state, 0.0),
+            DefenceOutcome::Hit { taken: 100 }
+        );
+    }
+
+    #[test]
     fn a_frontal_guard_absorbs_physical_and_spends_stamina() {
         let state = DefenceState {
             guard: Some(Guard {
                 stamina: 100.0,
+                stamina_damage: 20.0,
                 absorption: Absorption::default(),
                 source_facing_dot: 1.0,
             }),
@@ -228,6 +254,7 @@ mod tests {
         let state = DefenceState {
             guard: Some(Guard {
                 stamina: 100.0,
+                stamina_damage: 20.0,
                 absorption: Absorption::default(),
                 source_facing_dot: -1.0,
             }),
@@ -244,6 +271,7 @@ mod tests {
         let state = DefenceState {
             guard: Some(Guard {
                 stamina: 1.0,
+                stamina_damage: 20.0,
                 absorption: Absorption::default(),
                 source_facing_dot: 1.0,
             }),
@@ -256,10 +284,35 @@ mod tests {
     }
 
     #[test]
+    fn exact_exhaustion_breaks_and_hp_damage_does_not_determine_stamina() {
+        let state = DefenceState {
+            guard: Some(Guard {
+                stamina: 20.0 * GUARD_STAMINA_TAKEN,
+                stamina_damage: 20.0,
+                absorption: Absorption::default(),
+                source_facing_dot: 1.0,
+            }),
+            ..Default::default()
+        };
+        for amount in [1, 1000] {
+            assert!(matches!(
+                resolve(&melee(amount), &state, 0.99),
+                DefenceOutcome::Block {
+                    guard_broken: true,
+                    stamina_cost: 11,
+                    taken: 0,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
     fn a_buckler_absorption_leaves_a_remainder() {
         let state = DefenceState {
             guard: Some(Guard {
                 stamina: 100.0,
+                stamina_damage: 20.0,
                 absorption: Absorption {
                     physical: 0.5,
                     magic: 0.0,

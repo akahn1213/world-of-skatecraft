@@ -2,9 +2,8 @@
 //!
 //! benilla never ships ELDEN RING data. The faithful motion values, guard absorptions and the
 //! like come from a *profile* the player generates from their own copy of the game during setup
-//! (`third_party/elden-ring-combat-rewrite/tools`). benilla-app loads that profile at runtime: if
-//! it is present the Tarnished numbers are the game's own; if it is absent the feature is
-//! unavailable with a precise message ([`crate::unavailable`]), never a silent default.
+//! This schema is optional host input, not an upstream extractor output. The app does not yet
+//! load it. The simulation adapter uses the generated action table directly.
 //!
 //! The schema here is deliberately small and text-based so it carries no game data in the
 //! repository — only the shape a generated file must fill. Each line is `weapon_code key=value
@@ -100,6 +99,9 @@ impl Profile {
                 .ok_or_else(|| malformed(line, "missing weapon code"))?
                 .parse::<u8>()
                 .map_err(|_| malformed(line, "weapon code is not a number"))?;
+            if code > 24 {
+                return Err(malformed(line, "weapon code out of range"));
+            }
             let (mut light, mut heavy, mut phys, mut magic) = (None, None, None, None);
             for field in fields {
                 let (key, value) = field
@@ -108,11 +110,17 @@ impl Profile {
                 let num = value
                     .parse::<f32>()
                     .map_err(|_| malformed(line, "value is not a number"))?;
+                if !num.is_finite() || num < 0.0 {
+                    return Err(malformed(line, "value must be finite and nonnegative"));
+                }
                 match key {
-                    "light" => light = Some(num),
-                    "heavy" => heavy = Some(num),
-                    "phys" => phys = Some(num),
-                    "magic" => magic = Some(num),
+                    "light" if light.is_none() => light = Some(num),
+                    "heavy" if heavy.is_none() => heavy = Some(num),
+                    "phys" if phys.is_none() && num <= 1.0 => phys = Some(num),
+                    "magic" if magic.is_none() && num <= 1.0 => magic = Some(num),
+                    "light" | "heavy" | "phys" | "magic" => {
+                        return Err(malformed(line, "duplicate key or absorption out of range"));
+                    }
                     other => return Err(malformed(line, &format!("unknown key `{other}`"))),
                 }
             }
@@ -190,5 +198,19 @@ mod tests {
     fn a_duplicate_code_is_rejected() {
         let err = Profile::parse("0 light=1 heavy=1\n0 light=2 heavy=2").unwrap_err();
         assert!(err.to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn rejects_nonfinite_negative_unknown_and_duplicate_values() {
+        for text in [
+            "0 light=NaN heavy=1",
+            "0 light=inf heavy=1",
+            "0 light=-1 heavy=1",
+            "25 light=1 heavy=1",
+            "0 light=1 heavy=1 phys=1.1",
+            "0 light=1 light=2 heavy=1",
+        ] {
+            assert!(Profile::parse(text).is_err(), "{text}");
+        }
     }
 }

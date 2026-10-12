@@ -31,7 +31,12 @@ The data-independent WoW integration — mapping WoW weapon subclasses onto ELDE
 classes, scaling an attack's motion value onto a WoW weapon's damage, the ordered defence
 resolver (i-frame → passive dodge/parry → shield guard → damage) and the swept multi-target
 contact test — lives in `crates/benilla-tarnished` and reuses this simulation's design and
-constants (cited there), so it builds and is tested without any game data.
+constants (cited there), so it builds and is tested without any game data. The rewrite labels
+guard arc, guard raise time and stamina multiplier as ESTIMATE; they are not extracted facts.
+`setup/tarnished.py` retrieves the pinned extraction tools into ignored `.setup/tarnished/`
+and generates the action table there. `er-data` compiles build-directory copies of this tree,
+substituting glam vector imports and including that table, leaving these vendor files untouched.
+The adapter is `crates/benilla-tarnished/src/reference.rs`; app and server combat hooks are absent.
 
 ## Checking it against upstream
 
