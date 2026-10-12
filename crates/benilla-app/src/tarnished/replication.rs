@@ -32,6 +32,8 @@ pub(super) struct Link {
     entered: bool,
     supported: bool,
     pub(super) acknowledged: bool,
+    pub(super) requested: bool,
+    pub(super) request_time: f64,
     attempts: u8,
     next_probe: f64,
     last_send: f64,
@@ -57,9 +59,11 @@ impl Link {
         self.next_probe = now + 2.0;
     }
 
-    pub(super) fn begin(&mut self) {
+    pub(super) fn begin(&mut self, now: f64) {
         self.bout = self.bout.wrapping_add(1);
         self.last_send = f64::NEG_INFINITY;
+        self.requested = true;
+        self.request_time = now;
     }
 
     fn pose(&mut self, drive: &Drive, now: f64) -> Pose {
@@ -194,6 +198,7 @@ fn edge(
         SessionEvent::Disconnected { .. } | SessionEvent::LoggedOut
     );
     link.acknowledged = false;
+    link.requested = false;
     link.supported = false;
     link.attempts = 0;
     link.next_probe = time.elapsed_secs_f64();
@@ -211,12 +216,13 @@ fn packet(
     In(event): In<SessionEvent>,
     mut link: ResMut<Link>,
     mut host: ResMut<Host>,
-    drive: Res<Drive>,
+    mut drive: ResMut<Drive>,
     time: Res<Time<Real>>,
     index: Res<GuidIndex>,
     self_guid: Res<SelfGuid>,
     mut remotes: Query<&mut Remote>,
     mut commands: Commands,
+    net: Res<NetCommands>,
 ) {
     let SessionEvent::Tarnished(packet) = event else {
         return;
@@ -227,6 +233,18 @@ fn packet(
             // The server bounds pending work at 64; never let the host grow an unbounded queue.
             if host.incoming.len() < 64 {
                 host.incoming.push_back(hit);
+            }
+        }
+        Relay::Pose { guid, pose, .. }
+            if link.acknowledged && self_guid.0 == Some(guid) && pose.bout == link.bout =>
+        {
+            if pose.active && link.requested {
+                link.requested = false;
+                drive.active = true;
+                let _ = net.0.send(ClientCommand::TarnishedMode(true));
+                info!("tarnished: server approved sword/shield stance");
+            } else if !pose.active {
+                super::stop(&mut host, &mut drive, &mut link, &net);
             }
         }
         Relay::Pose { guid, pose, .. } if link.acknowledged && self_guid.0 != Some(guid) => {
@@ -323,12 +341,104 @@ fn remote(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn custom_hello_waits_for_server_authored_capabilities() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let net = NetCommands(tx);
+        let mut world = World::new();
+        world.insert_resource(Link {
+            entered: true,
+            ..default()
+        });
+        world.resource_mut::<Link>().discover(0.0, &net);
+        assert!(matches!(rx.try_recv().unwrap(),
+            ClientCommand::AddonMessage { text, .. } if text == "TARNISHED\tV\t2"));
+        let mut message = benilla_protocol::messages::ChatMessage {
+            chat_type: benilla_protocol::messages::CHAT_MSG_PARTY,
+            language: benilla_protocol::messages::LANGUAGE_ADDON,
+            sender_guid: 5,
+            target_guid: 0,
+            sender_name: None,
+            channel: None,
+            text: "TARNISHED\tCAPS\t2".into(),
+            chat_tag: 0,
+        };
+        world
+            .run_system_once_with(capabilities, SessionEvent::Chat(message.clone()))
+            .unwrap();
+        assert!(!world.resource::<Link>().supported);
+        message.sender_guid = 0;
+        world
+            .run_system_once_with(capabilities, SessionEvent::Chat(message))
+            .unwrap();
+        world.resource_mut::<Link>().discover(0.0, &net);
+        assert!(matches!(rx.try_recv().unwrap(),
+            ClientCommand::Tarnished(body) if body == benilla_protocol::tarnished::HELLO));
+    }
+
+    #[test]
+    fn only_matching_server_self_echo_grants_the_requested_stance() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut world = World::new();
+        world.insert_resource(NetCommands(tx));
+        world.insert_resource(Link {
+            acknowledged: true,
+            requested: true,
+            bout: 7,
+            ..default()
+        });
+        world.init_resource::<Host>();
+        world.init_resource::<Drive>();
+        world.init_resource::<Time<Real>>();
+        world.init_resource::<GuidIndex>();
+        world.insert_resource(SelfGuid(Some(3)));
+        let pose = Pose {
+            bout: 6,
+            sequence: 1,
+            sample_ms: 0,
+            active: true,
+            guarding: false,
+            action: 0,
+            position: [0.0; 3],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            joints: vec![],
+        };
+        let event = |pose| {
+            SessionEvent::Tarnished(Relay::Pose {
+                guid: 3,
+                receipt_ms: 0,
+                pose,
+            })
+        };
+        world
+            .run_system_once_with(packet, event(pose.clone()))
+            .unwrap();
+        assert!(!world.resource::<Drive>().active);
+        assert!(rx.is_empty());
+        let mut approved = pose;
+        approved.bout = 7;
+        world
+            .run_system_once_with(packet, event(approved.clone()))
+            .unwrap();
+        assert!(world.resource::<Drive>().active);
+        assert!(!world.resource::<Link>().requested);
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ClientCommand::TarnishedMode(true)
+        ));
+        // Subsequent visual echoes cannot grant the stance again.
+        world.run_system_once_with(packet, event(approved)).unwrap();
+        assert!(rx.is_empty());
+    }
 
     #[test]
     fn visual_mailbox_is_latest_wins_with_one_wake() {
-        let mut slot = Mailbox::default();
-        slot.payload = Some(vec![1]);
-        slot.queued = true;
+        let mut slot = Mailbox {
+            payload: Some(vec![1]),
+            queued: true,
+        };
         slot.payload = Some(vec![2]);
         assert_eq!(slot.take(), Some(vec![2]));
         assert!(!slot.queued);

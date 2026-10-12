@@ -551,7 +551,7 @@ mod relay_tag {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Relay {
     Hello,
-    /// Another client's freshest visual pose.
+    /// A freshest visual pose; the server's self echo grants or retires a requested stance.
     Pose {
         guid: u64,
         receipt_ms: u32,

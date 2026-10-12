@@ -83,8 +83,9 @@ fn send(packet: Packet, commands: &NetCommands) {
 }
 
 fn stop(host: &mut Host, drive: &mut Drive, link: &mut replication::Link, net: &NetCommands) {
-    if drive.active {
+    if drive.active || link.requested {
         drive.active = false;
+        link.requested = false;
         drive.lock = None;
         host.backend = None;
         host.incoming.clear();
@@ -171,7 +172,12 @@ fn tick(
     let pad = pads.iter().next();
     let toggle =
         keys.just_pressed(KeyCode::F8) || pad.is_some_and(|p| p.just_pressed(GamepadButton::Start));
-    if drive.active && (!allowed || !link.acknowledged || toggle) {
+    if (drive.active || link.requested)
+        && (!allowed
+            || !link.acknowledged
+            || toggle
+            || (link.requested && time.elapsed_secs_f64() - link.request_time > 2.0))
+    {
         stop(host, drive, link, &net);
     } else if toggle {
         if !benilla_tarnished::er_data_compiled() {
@@ -180,18 +186,17 @@ fn tick(
             warn!("tarnished: requires a negotiated server and a living, unmounted warrior with sword/shield");
         } else {
             host.backend = backend();
-            drive.active = host.backend.is_some();
             drive.position = player.pos;
             drive.yaw = player.face_yaw();
             host.combat.clock = Default::default();
             host.combat.begin_bout();
             host.grounded = player.move_flags() & crate::creature_anim::move_flags::FALLING == 0;
-            link.begin();
-            let _ = net.0.send(ClientCommand::TarnishedMode(true));
+            link.begin(time.elapsed_secs_f64());
+            // The self pose echoed by the server grants the stance before either controller changes.
+            drive.active = host.backend.is_some();
             link.publish(drive, time.elapsed_secs_f64(), &net, true);
-            info!(
-                "tarnished: stance enabled; RB light, RT heavy, LB guard, B tap roll/hold sprint"
-            );
+            drive.active = false;
+            info!("tarnished: requesting sword/shield stance");
         }
     }
     if !drive.active {

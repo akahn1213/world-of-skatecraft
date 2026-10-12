@@ -741,7 +741,7 @@ diff --git a/src/game/Tarnished.cpp b/src/game/Tarnished.cpp
 new file mode 100644
 --- /dev/null
 +++ b/src/game/Tarnished.cpp
-@@ -0,0 +1,519 @@
+@@ -0,0 +1,527 @@
 +// SPDX-License-Identifier: MIT OR Apache-2.0
 +// v2 capability, v1 envelopes with optional reference-stamina tails; see protocol/tarnished.rs.
 +#include "Tarnished.h"
@@ -775,7 +775,10 @@ new file mode 100644
 +            sword->GetProto()->SubClass == ITEM_SUBCLASS_WEAPON_SWORD &&
 +            shield->GetProto()->Class == ITEM_CLASS_ARMOR &&
 +            shield->GetProto()->SubClass == ITEM_SUBCLASS_ARMOR_SHIELD &&
-+            !player->IsMounted() && !player->IsNoWeaponShapeShift();
++            player->IsAlive() && !player->IsMounted() && !player->IsNoWeaponShapeShift() &&
++            !player->skateVisual.active && !player->IsInWater() &&
++            !player->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_STUNNED | UNIT_FLAG_CONFUSED |
++                UNIT_FLAG_FLEEING | UNIT_FLAG_TAXI_FLIGHT | UNIT_FLAG_REMOVE_CLIENT_CONTROL);
 +    }
 +
 +    bool Active(Unit const* unit)
@@ -851,7 +854,10 @@ new file mode 100644
 +            for (unsigned i = 0; i < 4; ++i)
 +                state.pose[6 + i] = uint8(state.poseSequence >> (i * 8));
 +            state.poseReceipt = WorldTimer::getMSTime();
-+            Relay(player, PosePacket(player));
++            WorldPacket stopped = PosePacket(player);
++            if (state.capable)
++                player->GetSession()->SendPacket(&stopped);
++            Relay(player, stopped);
 +        }
 +        state.active = false;
 +        state.blockedBout = state.hasPose;
@@ -1250,7 +1256,9 @@ new file mode 100644
 +            state.active = active;
 +            state.poseReceipt = received;
 +            state.pose.assign(data.contents(), data.contents() + data.size());
-+            Relay(player, PosePacket(player));
++            WorldPacket approved = PosePacket(player);
++            player->GetSession()->SendPacket(&approved); // self echo grants/retires the stance
++            Relay(player, approved);
 +            if (!active)
 +                Update(player);
 +        }
