@@ -757,6 +757,10 @@ pub(crate) static CAST_TRACE: std::sync::LazyLock<bool> =
 pub(crate) enum ClientCommand {
     /// A single wake token drains the freshest visual sample, not an unbounded pose queue.
     Skate(std::sync::Arc<std::sync::Mutex<crate::skate::replication::Mailbox>>),
+    TarnishedPose(std::sync::Arc<std::sync::Mutex<crate::tarnished::replication::Mailbox>>),
+    Tarnished(Vec<u8>),
+    /// Writer-side ownership prevents a queued stock swing from rearming autoattack.
+    TarnishedMode(bool),
     /// A self-movement packet. Each tail is written iff its flag is set (`JUMPING`, `SWIMMING`,
     /// `ON_TRANSPORT`): a flag without its tail desyncs the server's parse.
     Move {

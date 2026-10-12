@@ -101,6 +101,7 @@ mod opaque2d;
 /// way out registers through it.
 mod shutdown;
 mod skate;
+mod tarnished;
 mod smart_rect;
 mod sound;
 /// The two talent spell-modifier tables (`SMSG_SET_FLAT_/PCT_SPELL_MODIFIER`) and the read that

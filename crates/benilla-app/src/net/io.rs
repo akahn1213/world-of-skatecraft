@@ -784,6 +784,7 @@ fn writer_loop(
     ping_clock: &Mutex<PingClock>,
 ) {
     let mut writer: Option<WorldWriter> = None;
+    let mut tarnished = false;
     let mut warned = 0u32;
     // Armed at connect and re-armed by each send, never free-running: the reference pings when
     // `now - lastSent - 30000 >= 0` (`0x537ff0`), with `lastSent` stamped at connect (`0x537bcf`).
@@ -797,6 +798,7 @@ fn writer_loop(
                         w.watch_sends();
                     }
                     writer = Some(w);
+                    tarnished = false;
                     warned = 0;
                     // Sequence 1 is the new socket's first ping, so an old socket's pong cannot
                     // match.
@@ -841,6 +843,9 @@ fn writer_loop(
                     if let ClientCommand::Skate(slot) = &cmd {
                         slot.lock_recover().take();
                     }
+                    if let ClientCommand::TarnishedPose(slot) = &cmd {
+                        slot.lock_recover().take();
+                    }
                     // No live writer: the command is dropped, and both lines name it.
                     if benilla_assets::trace::enabled() {
                         benilla_assets::trace::line(
@@ -855,6 +860,17 @@ fn writer_loop(
                     continue;
                 };
                 let result = match cmd {
+                    ClientCommand::TarnishedMode(active) => {
+                        tarnished = active;
+                        if active { w.attack_stop() } else { Ok(()) }
+                    }
+                    ClientCommand::Tarnished(body) => w.tarnished(&body),
+                    ClientCommand::TarnishedPose(slot) => {
+                        match slot.lock_recover().take() {
+                            Some(body) => w.tarnished(&body),
+                            None => Ok(()),
+                        }
+                    }
                     ClientCommand::Skate(slot) => {
                         match slot.lock_recover().take() {
                             Some(body) => w.skate(&body),
@@ -1060,7 +1076,9 @@ fn writer_loop(
                     } => w.pet_spell_autocast(pet_guid, spell_id, enabled),
                     ClientCommand::PetAbandon { pet_guid } => w.pet_abandon(pet_guid),
                     ClientCommand::PetRename { pet_guid, name } => w.pet_rename(pet_guid, &name),
-                    ClientCommand::AttackSwing { guid } => w.attack_swing(guid),
+                    ClientCommand::AttackSwing { guid } => {
+                        if tarnished { Ok(()) } else { w.attack_swing(guid) }
+                    }
                     ClientCommand::AttackStop => w.attack_stop(),
                     ClientCommand::SetSheathed { state } => w.set_sheathed(state),
                     ClientCommand::StandStateChange { state } => w.stand_state_change(state),

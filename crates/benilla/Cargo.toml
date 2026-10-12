@@ -14,6 +14,7 @@ default = ["dev"]
 dev = ["benilla-app/dev"]
 # Profiling switches, forwarded so `cargo run -p benilla --features tracy` works.
 tracy = ["benilla-app/tracy"]
+er-data = ["benilla-app/er-data"]
 trace_chrome = ["benilla-app/trace_chrome"]
 
 [dependencies]

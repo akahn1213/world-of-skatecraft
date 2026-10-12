@@ -14,6 +14,7 @@ default = ["dev"]
 # The asset, format and world crates default `dev` on, so they come in without it, forwarded here.
 dev = ["benilla-assets/dev", "benilla-formats/dev", "benilla-world/dev", "dep:bevy_egui"]
 tracy = ["bevy/trace_tracy"]
+er-data = ["benilla-tarnished/er-data"]
 # Writes every system's per-run span to `trace-<ts>.json` in the cwd.
 trace_chrome = ["bevy/trace_chrome"]
 
@@ -42,6 +43,7 @@ crossbeam-channel = "0.5"
 benilla-assets = { path = "../benilla-assets", default-features = false }
 benilla-formats = { path = "../benilla-formats", default-features = false }
 benilla-protocol = { path = "../benilla-protocol" }
+benilla-tarnished = { path = "../benilla-tarnished" }
 benilla-world = { path = "../benilla-world", default-features = false }
 # The CVar diff persisted in `benilla-config/config.toml`.
 serde = { version = "1", features = ["derive"] }
