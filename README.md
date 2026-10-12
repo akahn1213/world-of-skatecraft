@@ -26,7 +26,8 @@ fully offline against a local server.
 ### Tarnished combat (experimental)
 
 `benilla-tarnished` contains weapon mapping, swept contacts and defender policy. Its optional
-`er-data` adapter drives the pure simulation pinned at
+`er-data` host bridge directly drives the upstream simulation, animation selection,
+authored crossfades, guard arm layers and orbit camera pinned at
 `177a3b5ec14a9bde39b9ab458a3400b4038224e3`. Build the launcher with `--features er-data`
 and use the patched vmangos server. F8 (pad Start) opts a living, unmounted warrior with a
 one-handed sword and shield into the stance; skating and ordinary movement cannot own the pad
@@ -37,12 +38,18 @@ attackable target; removal, death, range or occlusion clears the lock.
 
 The attacker owns swept contacts; the defender answers server-correlated hits in iframe,
 passive dodge/parry, held front guard, hit order. NPC and stock clients retain native defence.
-The generated table supplies timing, stamina and root/blade motion; presentation currently uses
-WoW animation clips, not ER skeletal or sound assets. Stock incoming stamina is normalized onto
+The generated table supplies timing, stamina and root/blade motion. Baked upstream ER animation
+joints are retargeted onto the actual WoW character and gear locally and relayed/interpolated for
+remote characters; active actions no longer use stock animation placeholders. Relayed poses
+include their reference fitting frames, so observing clients need no ER install. The right
+stick or held mouse look drives the upstream camera, with WoW geometry clipping its boom.
+The shared Skate 3 controller transport reads raw buttons; Bevy supplies sticks and RT because
+the pinned transport does not expose its private axes/triggers. Stock incoming stamina is normalized onto
 the reference sword and the pinned dummy's damage/stamina ratio. This is a fork policy, not an
 extracted WoW or ER rule. There has been no supervised live two-client combat verification.
 
-Generate the action table from your own ELDEN RING files with `python3 setup/tarnished.py`;
+Generate both the action table and baked animations from your own ELDEN RING files with
+`python3 setup/tarnished.py`;
 see [INSTALL.md](INSTALL.md#tarnished-action-table). No ELDEN RING data is distributed.
 The reference is this pinned rewrite, which explicitly marks several tuning constants as
 estimates; those are not verified facts about the original ELDEN RING client.

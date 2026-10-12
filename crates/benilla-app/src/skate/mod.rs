@@ -9,7 +9,7 @@ mod export;
 mod profession;
 mod rails;
 pub(crate) mod replication;
-mod rig;
+pub(crate) mod rig;
 mod score;
 mod sound;
 

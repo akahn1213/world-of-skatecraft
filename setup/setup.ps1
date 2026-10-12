@@ -211,7 +211,14 @@ if (-not (Test-Path $AccountFile)) {
 
 # ── Build ──────────────────────────────────────────────────────────────────────────────────────
 Step 'Building the game (first time: several minutes)'
-Invoke-Native 'the build' { cargo build --release -p benilla }
+if ($env:WOW_TARNISHED -eq '1') {
+    Invoke-Native 'ELDEN RING extraction' { python (Join-Path $Root 'setup\tarnished.py') }
+}
+$ErTable = if ($env:ER_EXTRACTED) { $env:ER_EXTRACTED } else { Join-Path $Root '.setup\tarnished\src\sim\extracted.rs' }
+$ErAnimations = if ($env:ER_ANIMATIONS) { $env:ER_ANIMATIONS } else { Join-Path $Root '.setup\tarnished\assets\player_anims.bin' }
+$Features = @()
+if ((Test-Path $ErTable) -and (Test-Path $ErAnimations)) { $Features = @('--features', 'er-data') }
+Invoke-Native 'the build' { cargo build --release -p benilla @Features }
 
 Step 'Done'
 Write-Host '  Start the game with:  play.bat'

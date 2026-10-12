@@ -77,8 +77,11 @@ impl Link {
             action: if drive.active { drive.action } else { 0 },
             position: drive.position.to_array(),
             rotation: Quat::from_rotation_y(drive.yaw).to_array(),
-            // The action table contains root/blade paths, not an ER skeletal asset.
-            joints: Vec::new(),
+            joints: if drive.active {
+                drive.joints.clone()
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -124,12 +127,13 @@ impl Link {
 pub(crate) struct ReplicatedTarnished;
 
 #[derive(Component)]
-struct Remote {
+pub(super) struct Remote {
     pose: Pose,
     previous: Pose,
     arrived: f64,
     previous_arrival: f64,
-    displayed_action: u16,
+    pub(super) displayed: Vec<benilla_protocol::tarnished::Joint>,
+    pub(super) displayed_active: bool,
 }
 
 fn newer(a: u32, b: u32) -> bool {
@@ -278,23 +282,12 @@ fn packet(
                     pose,
                     arrived: now,
                     previous_arrival: now,
-                    displayed_action: u16::MAX,
+                    displayed: Vec::new(),
+                    displayed_active: false,
                 });
             }
         }
         _ => {}
-    }
-}
-
-pub(super) fn native_animation(action: u16, guarding: bool) -> Option<u16> {
-    match action {
-        100..=140 => Some(17), // WoW Attack1H; never a source of ER timing.
-        2 => Some(30),         // Dodge presentation, not a fabricated ER skeletal animation.
-        3 => Some(24),
-        4 => Some(14),
-        5 => Some(7),
-        _ if guarding => Some(24),
-        _ => None,
     }
 }
 
@@ -307,17 +300,17 @@ fn remote(
         Has<ReplicatedTarnished>,
     )>,
     mut commands: Commands,
-    mut visuals: MessageWriter<crate::creature_anim::EmoteAnim>,
-    mut sequence: ResMut<crate::creature_anim::PlaySeq>,
 ) {
     let now = time.elapsed_secs_f64();
     for (entity, mut remote, mut transform, held) in &mut query {
         if !remote.pose.active || now - remote.arrived > 2.0 {
+            remote.displayed_active = false;
             if held {
                 commands.entity(entity).remove::<ReplicatedTarnished>();
             }
             continue;
         }
+        remote.displayed_active = true;
         if !held {
             commands.entity(entity).insert(ReplicatedTarnished);
         }
@@ -331,16 +324,24 @@ fn remote(
             .lerp(Vec3::from_array(remote.pose.position), t);
         transform.rotation = Quat::from_array(remote.previous.rotation)
             .slerp(Quat::from_array(remote.pose.rotation), t);
-        if !held || remote.pose.action != remote.displayed_action {
-            remote.displayed_action = remote.pose.action;
-            if let Some(anim_id) = native_animation(remote.pose.action, remote.pose.guarding) {
-                visuals.write(crate::creature_anim::EmoteAnim {
-                    entity,
-                    anim_id,
-                    seq: sequence.next(),
-                });
-            }
-        }
+        remote.displayed = remote
+            .pose
+            .joints
+            .iter()
+            .map(|joint| {
+                let mut out = joint.clone();
+                if let Some(previous) = remote.previous.joints.iter().find(|p| p.name == joint.name)
+                {
+                    out.translation = Vec3::from_array(previous.translation)
+                        .lerp(Vec3::from_array(joint.translation), t)
+                        .to_array();
+                    out.rotation = Quat::from_array(previous.rotation)
+                        .slerp(Quat::from_array(joint.rotation), t)
+                        .to_array();
+                }
+                out
+            })
+            .collect();
     }
 }
 
@@ -348,6 +349,58 @@ fn remote(
 mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn remote_baked_joints_are_displayed_only_until_off_or_timeout() {
+        let mut world = World::new();
+        world.init_resource::<Time<Real>>();
+        let pose = Pose {
+            bout: 1,
+            sequence: 1,
+            sample_ms: 0,
+            active: true,
+            guarding: false,
+            action: 100,
+            position: [0.0; 3],
+            rotation: Quat::IDENTITY.to_array(),
+            joints: vec![benilla_protocol::tarnished::Joint {
+                name: "Pelvis".into(),
+                translation: [0.0, 1.0, 0.0],
+                rotation: Quat::IDENTITY.to_array(),
+                scale: [1.0; 3],
+            }],
+        };
+        let entity = world
+            .spawn((
+                Transform::default(),
+                Remote {
+                    previous: pose.clone(),
+                    pose,
+                    arrived: 0.0,
+                    previous_arrival: 0.0,
+                    displayed: Vec::new(),
+                    displayed_active: false,
+                },
+            ))
+            .id();
+        world.run_system_once(remote).unwrap();
+        assert!(world.get::<Remote>(entity).unwrap().displayed_active);
+        assert_eq!(
+            world.get::<Remote>(entity).unwrap().displayed[0].translation,
+            [0.0, 1.0, 0.0]
+        );
+        assert!(world.get::<ReplicatedTarnished>(entity).is_some());
+        world.get_mut::<Remote>(entity).unwrap().pose.active = false;
+        world.run_system_once(remote).unwrap();
+        assert!(!world.get::<Remote>(entity).unwrap().displayed_active);
+        assert!(world.get::<ReplicatedTarnished>(entity).is_none());
+        world.get_mut::<Remote>(entity).unwrap().pose.active = true;
+        world
+            .resource_mut::<Time<Real>>()
+            .advance_by(std::time::Duration::from_secs(3));
+        world.run_system_once(remote).unwrap();
+        assert!(!world.get::<Remote>(entity).unwrap().displayed_active);
+    }
 
     #[test]
     fn custom_hello_waits_for_server_authored_capabilities() {

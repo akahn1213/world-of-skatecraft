@@ -12,4 +12,5 @@ docker compose -p %SKATECRAFT_SERVER_PROJECT% --project-directory server -f serv
 set WOW_HOST=localhost
 set WOW_SKATE_ASSETS=%~dp0skate-data\assets
 set WOW_SKATE_AUDIO=%~dp0skate-audio
+if "%ER_ANIMATIONS%"=="" set ER_ANIMATIONS=%~dp0.setup\tarnished\assets\player_anims.bin
 target\release\benilla.exe %*

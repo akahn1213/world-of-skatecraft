@@ -1,8 +1,10 @@
 //! Opt-in fork combat: the pinned 60 Hz reference drives intent, WoW owns terrain and health.
 
 pub(crate) mod replication;
+mod rig;
 
 use std::collections::VecDeque;
+use std::sync::Mutex;
 
 use benilla_protocol::tarnished::{Incoming, Packet};
 use benilla_tarnished::{
@@ -30,6 +32,28 @@ pub(crate) struct Drive {
     pub(crate) stamina: f32,
     pub(crate) lock: Option<u64>,
     pub(crate) falling: bool,
+    pub(crate) camera: Option<Transform>,
+    pub(crate) joints: Vec<benilla_protocol::tarnished::Joint>,
+    pub(crate) bind: Vec<benilla_tarnished::SolvedJoint>,
+}
+
+impl Drive {
+    pub(crate) fn owns_key(&self, key: KeyCode) -> bool {
+        (self.active || self.pending)
+            && matches!(
+                key,
+                KeyCode::KeyW
+                    | KeyCode::KeyA
+                    | KeyCode::KeyS
+                    | KeyCode::KeyD
+                    | KeyCode::KeyU
+                    | KeyCode::KeyI
+                    | KeyCode::KeyO
+                    | KeyCode::Space
+                    | KeyCode::F8
+                    | KeyCode::F9
+            )
+    }
 }
 
 #[derive(Resource, Default)]
@@ -40,16 +64,26 @@ struct Host {
     vertical_speed: f32,
     grounded: bool,
     steep_support: bool,
-    last_action: u16,
     input: InputBuffer,
+    transport: Mutex<skate_host::bridge::ControllerTransport>,
+    buttons: u16,
 }
 
 fn backend() -> Option<Box<dyn Backend>> {
     #[cfg(feature = "er-data")]
     {
-        Some(Box::new(
-            benilla_tarnished::reference::ReferenceBackend::sword_and_shield(),
-        ))
+        let path = std::env::var_os("ER_ANIMATIONS")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(".setup/tarnished/assets/player_anims.bin")
+            });
+        match benilla_tarnished::reference::ReferenceBackend::load(&path) {
+            Ok(backend) => Some(Box::new(backend)),
+            Err(error) => {
+                warn!("tarnished: cannot load {}: {error}; run python3 setup/tarnished.py (both actions and animations are required)", path.display());
+                None
+            }
+        }
     }
     #[cfg(not(feature = "er-data"))]
     {
@@ -74,6 +108,22 @@ impl Plugin for TarnishedPlugin {
         );
         app.add_systems(Startup, spawn_hud)
             .add_systems(Update, draw_hud.after(crate::player::PlayerControlSet));
+        app.add_systems(Startup, prepare);
+        app.add_systems(
+            PostUpdate,
+            rig::retarget
+                .in_set(benilla_world::rig_anim::PosePost)
+                .after(crate::creature_anim::apply_body_twist)
+                .after(benilla_world::rig_anim::apply_global_sequences)
+                .after(crate::entities::conform_units),
+        );
+    }
+}
+
+fn prepare(mut host: ResMut<Host>, mut drive: ResMut<Drive>) {
+    host.backend = backend();
+    if let Some(backend) = &host.backend {
+        drive.bind = backend.bind_pose();
     }
 }
 
@@ -89,6 +139,8 @@ fn stop(host: &mut Host, drive: &mut Drive, link: &mut replication::Link, net: &
         drive.pending = false;
         link.requested = false;
         drive.lock = None;
+        drive.joints.clear();
+        drive.camera = None;
         host.backend = None;
         host.incoming.clear();
         host.vertical_speed = 0.0;
@@ -123,7 +175,11 @@ fn equipped(store: &ObjectStore, items: &crate::items::Items, net: &NetCommands)
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn tick(
     time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
+    input_sources: (
+        Res<ButtonInput<KeyCode>>,
+        Res<ButtonInput<MouseButton>>,
+        Res<bevy::input::mouse::AccumulatedMouseMotion>,
+    ),
     pads: Query<&Gamepad>,
     window: Query<&Window, With<PrimaryWindow>>,
     capture: Res<crate::ui_script::UiKeyboardCapture>,
@@ -148,9 +204,8 @@ fn tick(
     ),
     mut state: (ResMut<Host>, ResMut<Drive>, ResMut<replication::Link>),
     net: Res<NetCommands>,
-    mut visuals: MessageWriter<crate::creature_anim::EmoteAnim>,
-    mut play_seq: ResMut<crate::creature_anim::PlaySeq>,
 ) {
+    let (keys, mouse, motion) = input_sources;
     let (host, drive, link) = (&mut *state.0, &mut *state.1, &mut *state.2);
     link.discover(time.elapsed_secs_f64(), &net);
     let (self_guid, index, items, reactions, selection, loading) = context;
@@ -172,8 +227,14 @@ fn tick(
                 && equipped(s, &items, &net)
         });
     let pad = pads.iter().next();
-    let toggle =
-        keys.just_pressed(KeyCode::F8) || pad.is_some_and(|p| p.just_pressed(GamepadButton::Start));
+    let raw = host.transport.lock().unwrap().poll();
+    let native = raw.controller().is_some();
+    let buttons = raw.buttons();
+    let pressed = buttons & !host.buttons;
+    host.buttons = buttons;
+    let toggle = keys.just_pressed(KeyCode::F8)
+        || pressed & 0x0010 != 0
+        || (!native && pad.is_some_and(|p| p.just_pressed(GamepadButton::Start)));
     if (drive.active || link.requested)
         && (!allowed
             || !link.acknowledged
@@ -188,6 +249,10 @@ fn tick(
             warn!("tarnished: requires a negotiated server and a living, unmounted warrior with sword/shield");
         } else {
             host.backend = backend();
+            if host.backend.is_none() {
+                return;
+            }
+            drive.bind = host.backend.as_ref().unwrap().bind_pose();
             drive.position = player.pos;
             drive.yaw = player.face_yaw();
             host.combat.clock = Default::default();
@@ -210,7 +275,8 @@ fn tick(
         return;
     };
     let lock_pressed = keys.just_pressed(KeyCode::F9)
-        || pad.is_some_and(|p| p.just_pressed(GamepadButton::RightThumb));
+        || pressed & 0x0080 != 0
+        || (!native && pad.is_some_and(|p| p.just_pressed(GamepadButton::RightThumb)));
     if lock_pressed {
         drive.lock = if drive.lock.is_some() {
             None
@@ -248,8 +314,22 @@ fn tick(
         drive.lock = None;
     }
     let cam_yaw = camera.single().map_or(drive.yaw, |cam| cam.heading());
+    let combat_key = |key| {
+        keys.pressed(key)
+            && !capture.consumed.contains(&key)
+            && ![
+                KeyCode::AltLeft,
+                KeyCode::AltRight,
+                KeyCode::ControlLeft,
+                KeyCode::ControlRight,
+                KeyCode::SuperLeft,
+                KeyCode::SuperRight,
+            ]
+            .iter()
+            .any(|key| keys.pressed(*key))
+    };
     let keyboard_axis = |positive, negative| {
-        u8::from(keys.pressed(positive)) as f32 - u8::from(keys.pressed(negative)) as f32
+        u8::from(combat_key(positive)) as f32 - u8::from(combat_key(negative)) as f32
     };
     let input = BackendInput {
         move_x: pad
@@ -258,13 +338,29 @@ fn tick(
         move_y: pad
             .and_then(|p| p.get(GamepadAxis::LeftStickY))
             .unwrap_or_else(|| keyboard_axis(KeyCode::KeyW, KeyCode::KeyS)),
-        light_attack: pad.is_some_and(|p| p.pressed(GamepadButton::RightTrigger))
-            || keys.pressed(KeyCode::KeyU),
+        look_x: pad.map_or(0.0, |p| p.right_stick().x),
+        look_y: pad.map_or(0.0, |p| p.right_stick().y),
+        mouse_x: if mouse.pressed(MouseButton::Right) || mouse.pressed(MouseButton::Left) {
+            motion.delta.x
+        } else {
+            0.0
+        },
+        mouse_y: if mouse.pressed(MouseButton::Right) || mouse.pressed(MouseButton::Left) {
+            motion.delta.y
+        } else {
+            0.0
+        },
+        light_attack: buttons & 0x0200 != 0
+            || (!native && pad.is_some_and(|p| p.pressed(GamepadButton::RightTrigger)))
+            || combat_key(KeyCode::KeyU),
         heavy_attack: pad.is_some_and(|p| p.pressed(GamepadButton::RightTrigger2))
-            || keys.pressed(KeyCode::KeyI),
-        guard: pad.is_some_and(|p| p.pressed(GamepadButton::LeftTrigger))
-            || keys.pressed(KeyCode::KeyO),
-        dodge: pad.is_some_and(|p| p.pressed(GamepadButton::East)) || keys.pressed(KeyCode::Space),
+            || combat_key(KeyCode::KeyI),
+        guard: buttons & 0x0100 != 0
+            || (!native && pad.is_some_and(|p| p.pressed(GamepadButton::LeftTrigger)))
+            || combat_key(KeyCode::KeyO),
+        dodge: buttons & 0x2000 != 0
+            || (!native && pad.is_some_and(|p| p.pressed(GamepadButton::East)))
+            || combat_key(KeyCode::Space),
         camera_yaw: reference_yaw(cam_yaw),
         target: locked.map(|(_, t, _, _)| reference_position(t.translation)),
         dt: TICK as f32,
@@ -278,8 +374,9 @@ fn tick(
         vertical_speed,
         grounded,
         steep_support,
-        last_action,
         input,
+        transport: _,
+        buttons: _,
     } = host;
     let Some(backend) = backend.as_mut() else {
         return;
@@ -290,6 +387,7 @@ fn tick(
     );
     for _ in 0..ticks {
         backend.set_transform(reference_position(drive.position), reference_yaw(drive.yaw));
+        backend.set_grounded(*grounded);
         let before = drive.position;
         combat.step(&mut **backend, input.tick());
         let solved = backend.state();
@@ -343,18 +441,46 @@ fn tick(
         drive.stamina = solved.stamina;
         backend.set_transform(reference_position(drive.position), reference_yaw(drive.yaw));
         drive.guarding = backend.guard(0.0, 1.0).is_some();
-        if *last_action != drive.action {
-            *last_action = drive.action;
-            if let Some(anim_id) = replication::native_animation(drive.action, drive.guarding) {
-                if let Some(&entity) = index.0.get(&self_id.0) {
-                    visuals.write(crate::creature_anim::EmoteAnim {
-                        entity,
-                        anim_id,
-                        seq: play_seq.next(),
-                    });
-                }
-            }
-        }
+        drive.joints = backend
+            .pose()
+            .iter()
+            .map(|joint| benilla_protocol::tarnished::Joint {
+                name: joint.name.clone(),
+                translation: joint.position,
+                rotation: joint.rotation,
+                scale: [1.0; 3],
+            })
+            .collect();
+        // Observers need no ER install: carry the reference frames needed to fit their M2.
+        drive.joints.extend(
+            drive
+                .bind
+                .iter()
+                .filter(|joint| {
+                    matches!(
+                        joint.name.as_str(),
+                        "Head" | "L_Hand" | "R_Hand" | "L_Forearm" | "R_Forearm"
+                    )
+                })
+                .map(|joint| benilla_protocol::tarnished::Joint {
+                    name: format!("Bind_{}", joint.name),
+                    translation: joint.position,
+                    rotation: joint.rotation,
+                    scale: [1.0; 3],
+                }),
+        );
+        drive.camera = backend.camera().map(|(eye, pivot)| {
+            let eye = Vec3::from_array(eye) / 0.9144;
+            let pivot = Vec3::from_array(pivot) / 0.9144;
+            let boom = eye - pivot;
+            let eye = Dir3::new(boom)
+                .ok()
+                .and_then(|direction| collision.ray_body(pivot, direction, boom.length()))
+                .map_or(eye, |hit| {
+                    pivot + boom.normalize_or_zero() * (hit.distance - 0.2).max(0.5)
+                });
+            Transform::from_translation(eye).looking_at(pivot, Vec3::Y)
+        });
         while let Some(hit) = incoming.pop_front() {
             let source = index
                 .0
@@ -391,7 +517,9 @@ fn tick(
                 &hit,
                 &DefenceState {
                     iframe: backend.invincible(),
-                    passive_eligible: dot >= 0.0 && self_store.0.unit_flags() & 0x0004_0000 == 0,
+                    passive_eligible: source.is_some()
+                        && dot >= 0.0
+                        && self_store.0.unit_flags() & 0x0004_0000 == 0,
                     dodge_chance: self_store.0.player_dodge_percentage().unwrap_or(0.0) / 100.0,
                     parry_chance: self_store.0.player_parry_percentage().unwrap_or(0.0) / 100.0,
                     can_parry: equipped(self_store, &items, &net),
@@ -452,6 +580,7 @@ fn tick(
             if let Some(verdict) =
                 combat.attack(&**backend, time.elapsed().as_millis() as u32, targets)
             {
+                backend.contact();
                 send(Packet::Attack(verdict), &net);
             }
         }

@@ -4,10 +4,12 @@ Upstream: [`Funny-Bones/ELDEN-RING-Combat-Rewrite`](https://github.com/Funny-Bon
 MIT (`LICENSE.md`, copyright 2026 Funny-Bones and contributors), pinned at commit
 `177a3b5ec14a9bde39b9ab458a3400b4038224e3`.
 
-Only the `src/sim/` state machine is copied here, byte for byte, plus the upstream `build.rs` and
+The `src/sim/` state machine and `src/anim.rs`, `src/rig.rs`, `src/camera.rs` are copied
+here byte for byte, plus the upstream `build.rs` and
 `LICENSE.md`. `src/sim/` is "the whole game as a pure 60 Hz state machine, with no engine types":
-`mod.rs`, `data.rs`, `player.rs`, `dummy.rs`, `level.rs` and `tests.rs`. The renderer, audio,
-camera, HUD, input and the Python tools are **not** copied — World of Skatecraft drives the
+`mod.rs`, `data.rs`, `player.rs`, `dummy.rs`, `level.rs` and `tests.rs`. The sandbox renderer
+in `rig.rs` is not compiled; audio, HUD, input and Python tools are **not** copied.
+World of Skatecraft drives the
 simulation from its own Bevy app and the stock WoW UI, not upstream's sandbox.
 
 ## This is code, never data
@@ -23,9 +25,8 @@ and in ours (`er-files/`, `*.er-profile`); each player generates them after clon
 
 These files are **not compiled by the Cargo workspace by default** — upstream's own `build.rs`
 exits when `src/sim/extracted.rs` is absent, which it always is here. They are vendored for
-provenance and so a fork that has generated the action table can wire the real simulation in
-behind the `benilla-tarnished` crate's `er-data` feature, which `include!`s this tree alongside
-the generated `extracted.rs`.
+provenance, and the `benilla-tarnished` crate's `er-data` feature compiles the real simulation
+alongside the generated `extracted.rs`.
 
 The data-independent WoW integration — mapping WoW weapon subclasses onto ELDEN RING weapon
 classes, scaling an attack's motion value onto a WoW weapon's damage, the ordered defence
@@ -33,13 +34,18 @@ resolver (i-frame → passive dodge/parry → shield guard → damage) and the s
 contact test — lives in `crates/benilla-tarnished` and reuses this simulation's design and
 constants (cited there), so it builds and is tested without any game data. The rewrite labels
 guard arc, guard raise time and stamina multiplier as ESTIMATE; they are not extracted facts.
-`setup/tarnished.py` retrieves the pinned extraction tools into ignored `.setup/tarnished/`
-and generates the action table there. `er-data` compiles build-directory copies of this tree,
-substituting glam vector imports and including that table, leaving these vendor files untouched.
+`setup/tarnished.py` retrieves the pinned extraction and animation baking tools into ignored
+`.setup/tarnished/` and generates both outputs there. `er-data` compiles build-directory copies
+of this tree, substituting glam vector imports and including that table, leaving these vendor
+files untouched. Upstream has no library target. The host build extracts its pure `playing`,
+authored crossfade and arm-overlay mechanisms from `rig.rs`, and its camera look/follow equations
+from `camera.rs`; it does not compile the sandbox renderer or implement a competing state machine.
 The adapter is `crates/benilla-tarnished/src/reference.rs`; the host/controller is
 `crates/benilla-app/src/tarnished/`, and the negotiated server routes are in
-`setup/vmangos/tarnished.patch`. WoW clips present the actions until an ER skeletal asset adapter
-exists; no animation or sound blobs are supplied by the action extractor.
+`setup/vmangos/tarnished.patch`. The pinned animation loader reads the baked ER pose asset,
+the host retargets solved joints onto tagged WoW M2 bones, and the visual mailbox carries those
+joints for remote retargeting. WoW still owns world collision, health, equipment and the UI.
+No generated action table, animation blob or sound asset is distributed.
 
 ## Checking it against upstream
 
@@ -48,6 +54,10 @@ REF=177a3b5ec14a9bde39b9ab458a3400b4038224e3
 for f in mod data player dummy level tests; do
   diff <(curl -fsSL "https://raw.githubusercontent.com/Funny-Bones/ELDEN-RING-Combat-Rewrite/$REF/src/sim/$f.rs") \
        third_party/elden-ring-combat-rewrite/src/sim/$f.rs
+done
+for f in anim rig camera; do
+  diff <(curl -fsSL "https://raw.githubusercontent.com/Funny-Bones/ELDEN-RING-Combat-Rewrite/$REF/src/$f.rs") \
+       third_party/elden-ring-combat-rewrite/src/$f.rs
 done
 ```
 

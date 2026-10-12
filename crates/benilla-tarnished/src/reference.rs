@@ -20,6 +20,12 @@ pub struct ReferenceBackend {
     previous: BackendInput,
     action: Option<(data::ActionId, f32)>,
     epoch: u32,
+    animation: Option<crate::animation::Animation>,
+    pose: Vec<crate::SolvedJoint>,
+    camera: crate::camera::Camera,
+    view: Option<([f32; 3], [f32; 3])>,
+    grounded: bool,
+    feedback_window: Option<u64>,
 }
 
 impl ReferenceBackend {
@@ -34,7 +40,20 @@ impl ReferenceBackend {
             previous: BackendInput::default(),
             action: None,
             epoch: 0,
+            animation: None,
+            pose: Vec::new(),
+            camera: Default::default(),
+            view: None,
+            grounded: true,
+            feedback_window: None,
         }
+    }
+
+    pub fn load(path: &std::path::Path) -> std::io::Result<Self> {
+        let mut backend = Self::sword_and_shield();
+        backend.animation = Some(crate::animation::Animation::load(path, &backend.player)?);
+        backend.pose = backend.animation.as_ref().unwrap().bind();
+        Ok(backend)
     }
 
     pub fn position(&self) -> Vec3 {
@@ -67,6 +86,26 @@ impl ReferenceBackend {
             &self.level,
         );
     }
+
+    fn action(&self) -> Option<(data::ActionId, f32)> {
+        if let Some(air) = self.player.air_attack {
+            return Some((
+                data::ActionId::Attack(
+                    air.moveset,
+                    if air.heavy {
+                        data::AttackKind::JumpHeavyLand
+                    } else {
+                        data::AttackKind::JumpLightLand
+                    },
+                ),
+                air.f,
+            ));
+        }
+        match self.player.state {
+            State::Act(action) => Some((action.id, action.f)),
+            _ => None,
+        }
+    }
 }
 
 fn button(held: bool, previous: bool) -> Button {
@@ -80,25 +119,30 @@ fn button(held: bool, previous: bool) -> Button {
 impl Backend for ReferenceBackend {
     fn step(&mut self, input: BackendInput) {
         // One call is exactly one tick. The host accumulates real time; dt never changes ER windows.
+        let camera_yaw = self.camera.step(&self.player, &input);
         let inp = Input {
             mv: Vec2::new(input.move_x, input.move_y),
-            cam_yaw: input.camera_yaw,
+            cam_yaw: camera_yaw,
             light: button(input.light_attack, self.previous.light_attack),
             heavy: button(input.heavy_attack, self.previous.heavy_attack),
             guard: button(input.guard, self.previous.guard),
             dodge: button(input.dodge, self.previous.dodge),
             ..Default::default()
         };
-        // The host owns terrain height; flatten the reference locally at the resolved feet.
+        // The host owns support/vertical travel; upstream still selects its own fall and landing.
         let floor = self.player.pos.y;
-        self.player.pos.y = 0.0;
+        if !self.grounded && !matches!(self.player.state, State::Air(_)) {
+            self.player.state = State::Air(crate::sim::player::Air {
+                vel: self.player.move_dir * self.player.speed,
+                jumped: false,
+                f: 0.0,
+            });
+        }
+        self.player.pos.y = if self.grounded { 0.0 } else { 1.0 };
         let target = input.target.map(|p| Vec3::from_array(p) - Vec3::Y * floor);
         self.player.step(&inp, &self.level, target, true);
-        self.player.pos.y += floor;
-        let next = match self.player.state {
-            State::Act(a) => Some((a.id, a.f)),
-            _ => None,
-        };
+        self.player.pos.y = floor;
+        let next = self.action();
         if next.is_some_and(|(id, frame)| {
             self.action
                 .is_none_or(|(old, previous)| old != id || frame < previous)
@@ -107,6 +151,10 @@ impl Backend for ReferenceBackend {
         }
         self.action = next;
         self.previous = input;
+        if let Some(animation) = &mut self.animation {
+            self.pose = animation.step(&self.player);
+        }
+        self.view = Some(self.camera.follow(&self.player));
     }
 
     fn active_swing(&self) -> Option<Swing> {
@@ -158,18 +206,18 @@ impl Backend for ReferenceBackend {
             contact_window: u64::from(self.epoch) << 32,
             ..Default::default()
         };
-        if let State::Act(a) = self.player.state {
-            state.action = match a.id {
+        if let Some((id, frame)) = self.action() {
+            state.action = match id {
                 data::ActionId::Attack(moveset, kind) => {
                     state.attack_kind = kind as u8;
                     if usize::from(moveset.weapon) == data::SHIELD {
                         state.weapon_class = crate::ErWeapon::Shield.code();
                     }
-                    if let Some(index) =
-                        a.id.def()
-                            .hits
-                            .iter()
-                            .position(|h| a.f >= h.from && a.f < h.to)
+                    if let Some(index) = id
+                        .def()
+                        .hits
+                        .iter()
+                        .position(|h| frame >= h.from && frame < h.to)
                     {
                         state.contact_window |= index as u64;
                     }
@@ -209,11 +257,54 @@ impl Backend for ReferenceBackend {
         // The pinned dummy's damage/stamina pairs share 4:1 (dummy.rs::DState::Strike).
         data::WEAPONS[data::DEFAULT_WEAPON].attack * damage_ratio.max(0.0) / 4.0
     }
+
+    fn pose(&self) -> &[crate::SolvedJoint] {
+        &self.pose
+    }
+
+    fn bind_pose(&self) -> Vec<crate::SolvedJoint> {
+        self.animation
+            .as_ref()
+            .map_or_else(Vec::new, |animation| animation.bind())
+    }
+
+    fn camera(&self) -> Option<([f32; 3], [f32; 3])> {
+        self.view
+    }
+
+    fn set_grounded(&mut self, grounded: bool) {
+        self.grounded = grounded;
+    }
+
+    fn contact(&mut self) {
+        let window = self.state().contact_window;
+        if self.feedback_window != Some(window) {
+            if let Some(hit) = self.player.active_hit() {
+                // sim::World::player_attacks supplies this exact feedback. Its one-dummy mark_hit
+                // is replaced by the host's per-target ledger so a sweep can reach several bodies.
+                self.player.hit_stop = hit.stop * data::HIT_STOP_SCALE;
+                self.feedback_window = Some(window);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_support_drives_upstream_falling_without_integrating_height_twice() {
+        let mut backend = ReferenceBackend::sword_and_shield();
+        backend.set_transform(Vec3::new(0.0, 30.0, 0.0), 0.0);
+        backend.set_grounded(false);
+        backend.step(BackendInput::default());
+        assert!(matches!(backend.player.state, State::Air(_)));
+        assert_eq!(backend.position().y, 30.0);
+        backend.step(BackendInput::default());
+        assert!(matches!(backend.player.state, State::Air(air) if air.f > 0.0));
+        assert_eq!(backend.position().y, 30.0);
+    }
 
     #[test]
     fn shield_requires_held_guard_and_reference_raise_time() {

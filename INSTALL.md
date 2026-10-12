@@ -12,7 +12,8 @@ This is an optional experimental development setup. Supply your own
 ELDEN RING install and unpack its containers with UXM/WitchyBND into a separate folder.
 Set `ER_FILES` to that folder (`chr/` and `regulation-bin/*.param`) and `ER_GAME_DIR` to
 the game's `Game` folder containing `oo2core_6_win64.dll`. The pinned extractor needs
-`c0000.anibnd.dcx`, `c0000_a00_hi`, and the `a2x`, `a3x`, `a4x`, `a5x` animation packs.
+`c0000.anibnd.dcx` and the `c0000_a00_hi`, `a00_lo`, `a00_md`, `a0x`, `a1x`,
+`a2x`, `a3x`, `a4x`, `a5x` animation packs (`.anibnd.dcx`).
 On Linux/macOS also supply Wine and set `WINE_PYTHON` to a Windows `python.exe`; setup
 does not install either.
 
@@ -21,15 +22,28 @@ From the repository root:
 ```sh
 python3 setup/tarnished.py
 cargo test -p benilla-tarnished --features er-data
-cargo build -p benilla --features er-data
+cargo build --release -p benilla --features er-data
+./play.sh
 ```
 
 The script downloads only the extraction tools from the vendor's pinned revision and writes
-tools, scratch and the generated table beneath ignored `.setup/tarnished/`, outside the input
+tools, scratch, the generated table and `assets/player_anims.bin` beneath ignored
+`.setup/tarnished/`, outside the input
 folders. It reads the install, never writes to it. `ER_EXTRACTED` can instead name an existing
 generated Rust action table; only use a trusted local table because Cargo compiles it as code.
-Nothing generated may be committed. Animation and sound baking and a runtime profile generator
-are not provided by this command. No live combat run is claimed.
+`ER_ANIMATIONS` can name an existing baked `player_anims.bin` at runtime. Both are required:
+the client refuses the stance rather than substitute stock action animations when the animation
+file is missing. Keep the baked file on disk beside your development checkout or set its absolute
+path for a relocated player build. Nothing generated may be committed. Sound baking is not
+included. No live combat run is claimed.
+
+Alternatively, set `WOW_TARNISHED=1` together with `ER_FILES` and `ER_GAME_DIR` before running
+normal setup: it extracts both inputs and builds the release launcher with `er-data`. Normal
+setup also enables `er-data` automatically when both generated files already exist, including
+on Windows. `play.sh` / `play.bat` select the baked animation file; they run the release binary
+that setup built. Upstream is a binary-only Bevy 0.19 sandbox, so the bridge vendors exact
+pinned sources and isolates its math rather than adding an invalid Cargo git library dependency
+or upgrading the WoW renderer.
 The vmangos image build applies `skatecraft.patch` and then `tarnished.patch`; a stock server
 receives only the safe addon discovery message and never an unnegotiated Tarnished opcode.
 See [README.md](README.md#tarnished-combat-experimental) for controller and stance controls.

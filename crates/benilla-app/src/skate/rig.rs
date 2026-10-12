@@ -45,10 +45,10 @@ fn reference_bind(name: &str) -> Option<Mat4> {
 }
 
 /// A WoW bone driven by a skater bone, and the child pair that fixes its direction.
-struct Mapping {
-    bone: usize,
-    skate: &'static str,
-    child: Option<(usize, &'static str)>,
+pub(crate) struct Mapping {
+    pub(crate) bone: usize,
+    pub(crate) skate: &'static str,
+    pub(crate) child: Option<(usize, &'static str)>,
 }
 
 /// KeyBoneIDs (wowdev's `KeyBone` enum).
@@ -63,7 +63,7 @@ mod key {
 }
 
 /// The skeleton's mappings, found once per rig layout.
-fn map_skeleton(parents: &[i16], pivots: &[Vec3], key_bones: &[i16]) -> Vec<Mapping> {
+pub(crate) fn map_skeleton(parents: &[i16], pivots: &[Vec3], key_bones: &[i16]) -> Vec<Mapping> {
     let n = parents.len();
     let parent = |i: usize| usize::try_from(parents[i]).ok().filter(|&p| p < n);
     let mut children = vec![Vec::new(); n];

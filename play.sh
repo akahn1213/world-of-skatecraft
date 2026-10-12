@@ -12,4 +12,5 @@ docker compose -p "${SKATECRAFT_SERVER_PROJECT:-world-of-skatecraft}" --project-
 export WOW_HOST=localhost
 export WOW_SKATE_ASSETS="$ROOT/skate-data/assets"
 export WOW_SKATE_AUDIO="$ROOT/skate-audio"
+export ER_ANIMATIONS="${ER_ANIMATIONS:-$ROOT/.setup/tarnished/assets/player_anims.bin}"
 exec target/release/benilla "$@"

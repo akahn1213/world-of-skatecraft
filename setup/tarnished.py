@@ -8,7 +8,7 @@ import sys
 from urllib.request import urlopen
 
 REVISION = "177a3b5ec14a9bde39b9ab458a3400b4038224e3"
-TOOLS = ("extract", "paths", "erfmt", "hkanim", "hkx", "param", "tae", "skel")
+TOOLS = ("extract", "bake_anims", "paths", "erfmt", "hkanim", "hkx", "param", "tae", "skel")
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -46,9 +46,13 @@ def main():
         env["WINE_PYTHON"] = str(wine_python)
         env["WINEPREFIX"] = str(workspace / "wine")
     subprocess.run([sys.executable, str(tools / "extract.py")], cwd=workspace, env=env, check=True)
+    subprocess.run([sys.executable, str(tools / "bake_anims.py")], cwd=workspace, env=env, check=True)
     table = workspace / "src" / "sim" / "extracted.rs"
     if not table.is_file() or table.stat().st_size == 0:
         sys.exit("Extractor did not produce an action table.")
+    animations = workspace / "assets" / "player_anims.bin"
+    if not animations.is_file() or animations.stat().st_size == 0:
+        sys.exit("Animation baker did not produce player_anims.bin.")
     print(f"Generated {table}; validate with cargo test -p benilla-tarnished --features er-data")
 
 

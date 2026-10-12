@@ -340,6 +340,7 @@ fn latch_and_dispatch(
     mut notches: Local<WheelNotches>,
     mut focus_lost: MessageReader<bevy::input::keyboard::KeyboardFocusLost>,
     cover: Option<Res<crate::loading_screen::LoadingScreen>>,
+    tarnished: Option<Res<crate::tarnished::Drive>>,
 ) {
     state.just.clear();
     state.fired.clear();
@@ -415,7 +416,13 @@ fn latch_and_dispatch(
                     );
                 // A keyboard frame ate this one key (the world map's `OnKeyDown`, a cinematic);
                 // per key, so every other binding is untouched.
-                let eaten = capture.consumed.contains(&ev.key_code);
+                let eaten = capture.consumed.contains(&ev.key_code)
+                    || (!ctrl
+                        && !alt
+                        && !sup
+                        && tarnished
+                            .as_ref()
+                            .is_some_and(|drive| drive.owns_key(ev.key_code)));
                 // A repeat is a key we already believe is down, the reference's test. Recorded
                 // before the gates below, so a key held through a focused box stays down.
                 let repeat = state.down.contains(&key);
@@ -661,6 +668,28 @@ mod tests {
     }
     fn state(app: &App) -> &BindingsState {
         app.world().resource::<BindingsState>()
+    }
+    #[test]
+    fn tarnished_owns_combat_keys_without_firing_stock_jump_or_movement() {
+        let mut app = harness();
+        app.insert_resource(crate::tarnished::Drive {
+            active: true,
+            ..default()
+        });
+        press_key(&mut app, KeyCode::Space);
+        press_key(&mut app, KeyCode::KeyW);
+        app.update();
+        assert!(!state(&app).fired(Input::Jump));
+        assert!(!state(&app).pressed(Input::MoveForward));
+        release_key(&mut app, KeyCode::Space);
+        release_key(&mut app, KeyCode::KeyW);
+        app.update();
+        app.world_mut()
+            .resource_mut::<crate::tarnished::Drive>()
+            .active = false;
+        press_key(&mut app, KeyCode::Space);
+        app.update();
+        assert!(state(&app).fired(Input::Jump));
     }
     fn mouse(app: &mut App, button: MouseButton, state: bevy::input::ButtonState) {
         app.world_mut().write_message(MouseButtonInput {

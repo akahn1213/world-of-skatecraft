@@ -435,6 +435,11 @@ pub(super) fn control(
             if !drive.falling {
                 player.airborne_since = None;
             }
+            if let Some(camera) = drive.camera {
+                *cam_t = camera;
+                cam.yaw = camera.rotation.to_euler(EulerRot::YXZ).0;
+                return;
+            }
             if drive.lock.is_some() {
                 cam.yaw = drive.yaw;
             }

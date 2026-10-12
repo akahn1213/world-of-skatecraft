@@ -24,6 +24,10 @@ pub mod weapon;
 #[cfg(feature = "er-data")]
 include!(concat!(env!("OUT_DIR"), "/sim_entry.rs"));
 #[cfg(feature = "er-data")]
+mod animation;
+#[cfg(feature = "er-data")]
+mod camera;
+#[cfg(feature = "er-data")]
 pub mod reference;
 
 pub use weapon::{ErWeapon, Hand, Loadout, Offhand};
@@ -85,6 +89,27 @@ pub trait Backend: Send + Sync {
     );
     /// Normalize a stock attack onto the reference armament, rather than inventing a stamina cost.
     fn stock_stamina_damage(&self, damage_ratio: f32) -> f32;
+    /// Root-relative, model-space joints solved from the player's baked upstream animations.
+    fn pose(&self) -> &[SolvedJoint] {
+        &[]
+    }
+    fn bind_pose(&self) -> Vec<SolvedJoint> {
+        Vec::new()
+    }
+    fn camera(&self) -> Option<([f32; 3], [f32; 3])> {
+        None
+    }
+    /// Terrain support belongs to the host, while the reference chooses airborne/landing actions.
+    fn set_grounded(&mut self, _grounded: bool) {}
+    /// Feedback for a fresh contact batch; the host owns per-target contact accounting.
+    fn contact(&mut self) {}
+}
+
+#[derive(Clone, Debug)]
+pub struct SolvedJoint {
+    pub name: String,
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -107,6 +132,10 @@ pub struct BackendInput {
     /// Desired planar move direction in the character's frame, length 0..1.
     pub move_x: f32,
     pub move_y: f32,
+    pub look_x: f32,
+    pub look_y: f32,
+    pub mouse_x: f32,
+    pub mouse_y: f32,
     pub light_attack: bool,
     pub heavy_attack: bool,
     pub guard: bool,

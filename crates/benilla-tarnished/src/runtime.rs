@@ -14,11 +14,14 @@ pub struct InputBuffer {
     sampled: u8,
     held: u8,
     edges: VecDeque<u8>,
+    mouse: [f32; 2],
 }
 
 impl InputBuffer {
     pub fn sample(&mut self, input: BackendInput) {
         self.latest = input;
+        self.mouse[0] += input.mouse_x;
+        self.mouse[1] += input.mouse_y;
         let buttons = u8::from(input.light_attack)
             | (u8::from(input.heavy_attack) << 1)
             | (u8::from(input.guard) << 2)
@@ -38,12 +41,15 @@ impl InputBuffer {
         } else {
             self.held = self.sampled;
         }
+        let mouse = std::mem::take(&mut self.mouse);
         BackendInput {
             light_attack: self.held & 1 != 0,
             heavy_attack: self.held & 2 != 0,
             guard: self.held & 4 != 0,
             dodge: self.held & 8 != 0,
             dt: TICK as f32,
+            mouse_x: mouse[0],
+            mouse_y: mouse[1],
             ..self.latest
         }
     }
@@ -160,6 +166,25 @@ impl Combat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mouse_motion_accumulates_without_ticks_and_is_not_repeated_by_catchup() {
+        let mut input = InputBuffer::default();
+        input.sample(BackendInput {
+            mouse_x: 2.0,
+            mouse_y: 1.0,
+            ..Default::default()
+        });
+        input.sample(BackendInput {
+            mouse_x: 3.0,
+            mouse_y: -1.0,
+            ..Default::default()
+        });
+        let tick = input.tick();
+        assert_eq!([tick.mouse_x, tick.mouse_y], [5.0, 0.0]);
+        let tick = input.tick();
+        assert_eq!([tick.mouse_x, tick.mouse_y], [0.0, 0.0]);
+    }
     use benilla_protocol::tarnished::DefenceOutcome;
 
     #[derive(Default)]
