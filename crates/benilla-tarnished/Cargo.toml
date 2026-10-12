@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+description = "Opt-in Tarnished combat policy and pinned rewrite adapter (not app/server integration)"
 
 [lints]
 workspace = true

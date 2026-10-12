@@ -25,6 +25,9 @@ def main():
     if sys.platform != "win32":
         if not shutil.which("wine") or not os.environ.get("WINE_PYTHON"):
             sys.exit("Linux/macOS extraction requires Wine and WINE_PYTHON pointing to Windows python.exe.")
+        wine_python = Path(os.environ["WINE_PYTHON"]).resolve()
+        if not wine_python.is_file():
+            sys.exit("WINE_PYTHON must name an existing Windows python.exe; no automatic download.")
     tools = workspace / "tools"
     tools.mkdir(parents=True, exist_ok=True)
     (workspace / "src" / "sim").mkdir(parents=True, exist_ok=True)
@@ -40,7 +43,8 @@ def main():
     for key in ("TMPDIR", "TMP", "TEMP"):
         env[key] = str(scratch)
     if sys.platform != "win32":
-        env.setdefault("WINEPREFIX", str(workspace / "wine"))
+        env["WINE_PYTHON"] = str(wine_python)
+        env["WINEPREFIX"] = str(workspace / "wine")
     subprocess.run([sys.executable, str(tools / "extract.py")], cwd=workspace, env=env, check=True)
     table = workspace / "src" / "sim" / "extracted.rs"
     if not table.is_file() or table.stat().st_size == 0:

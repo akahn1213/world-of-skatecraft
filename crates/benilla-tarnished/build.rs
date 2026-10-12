@@ -52,6 +52,10 @@ fn main() {
             .replace(
                 "pub mod extracted;",
                 &format!("#[path = {:?}]\npub mod extracted;", generated),
+            )
+            .replace(
+                "mod tests;",
+                "#[allow(clippy::needless_range_loop)]\nmod tests;",
             );
         std::fs::write(sim.join(format!("{name}.rs")), text).expect("write simulation build copy");
     }

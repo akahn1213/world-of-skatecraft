@@ -128,8 +128,8 @@ impl Profile {
                 light_mv: light.ok_or_else(|| malformed(line, "missing `light`"))?,
                 heavy_mv: heavy.ok_or_else(|| malformed(line, "missing `heavy`"))?,
                 guard: Absorption {
-                    physical: phys.unwrap_or(1.0),
-                    magic: magic.unwrap_or(0.0),
+                    physical: phys.ok_or_else(|| malformed(line, "missing `phys`"))?,
+                    magic: magic.ok_or_else(|| malformed(line, "missing `magic`"))?,
                 },
             };
             if by_code.insert(code, entry).is_some() {
@@ -196,7 +196,9 @@ mod tests {
 
     #[test]
     fn a_duplicate_code_is_rejected() {
-        let err = Profile::parse("0 light=1 heavy=1\n0 light=2 heavy=2").unwrap_err();
+        let err =
+            Profile::parse("0 light=1 heavy=1 phys=1 magic=1\n0 light=2 heavy=2 phys=1 magic=1")
+                .unwrap_err();
         assert!(err.to_string().contains("duplicate"));
     }
 
@@ -209,6 +211,7 @@ mod tests {
             "25 light=1 heavy=1",
             "0 light=1 heavy=1 phys=1.1",
             "0 light=1 light=2 heavy=1",
+            "0 light=1 heavy=1",
         ] {
             assert!(Profile::parse(text).is_err(), "{text}");
         }
