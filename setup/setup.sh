@@ -221,10 +221,13 @@ fi
 step "Building the game (first time: several minutes)"
 FEATURES=()
 if [ "${WOW_TARNISHED:-0}" = 1 ]; then
-    python3 "$ROOT/setup/tarnished.py" || die "ELDEN RING extraction failed; check ER_FILES and ER_GAME_DIR"
-fi
-if [ -f "${ER_EXTRACTED:-$ROOT/.setup/tarnished/src/sim/extracted.rs}" ] &&
-   [ -f "${ER_ANIMATIONS:-$ROOT/.setup/tarnished/assets/player_anims.bin}" ]; then
+    ER_TABLE=${ER_EXTRACTED:-$ROOT/.setup/tarnished/src/sim/extracted.rs}
+    ER_POSES=${ER_ANIMATIONS:-$ROOT/.setup/tarnished/assets/player_anims.bin}
+    if [ ! -s "$ER_TABLE" ] || [ ! -s "$ER_POSES" ]; then
+        python3 "$ROOT/setup/tarnished.py" || die "ELDEN RING extraction failed; check ER_FILES and ER_GAME_DIR"
+    fi
+    [ -s "$ER_TABLE" ] && [ -s "$ER_POSES" ] ||
+        die "Tarnished needs a matching nonempty ER_EXTRACTED table and ER_ANIMATIONS bake"
     FEATURES=(--features er-data)
 fi
 cargo build --release -p benilla "${FEATURES[@]}" || die "the build failed (see the lines above)" "$(packages_hint)"

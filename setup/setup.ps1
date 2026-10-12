@@ -211,13 +211,22 @@ if (-not (Test-Path $AccountFile)) {
 
 # ── Build ──────────────────────────────────────────────────────────────────────────────────────
 Step 'Building the game (first time: several minutes)'
-if ($env:WOW_TARNISHED -eq '1') {
-    Invoke-Native 'ELDEN RING extraction' { python (Join-Path $Root 'setup\tarnished.py') }
-}
 $ErTable = if ($env:ER_EXTRACTED) { $env:ER_EXTRACTED } else { Join-Path $Root '.setup\tarnished\src\sim\extracted.rs' }
 $ErAnimations = if ($env:ER_ANIMATIONS) { $env:ER_ANIMATIONS } else { Join-Path $Root '.setup\tarnished\assets\player_anims.bin' }
 $Features = @()
-if ((Test-Path $ErTable) -and (Test-Path $ErAnimations)) { $Features = @('--features', 'er-data') }
+function Test-ErInputs {
+    (Test-Path $ErTable -PathType Leaf) -and ((Get-Item $ErTable).Length -gt 0) -and
+    (Test-Path $ErAnimations -PathType Leaf) -and ((Get-Item $ErAnimations).Length -gt 0)
+}
+if ($env:WOW_TARNISHED -eq '1') {
+    if (-not (Test-ErInputs)) {
+        Invoke-Native 'ELDEN RING extraction' { python (Join-Path $Root 'setup\tarnished.py') }
+    }
+    if (-not (Test-ErInputs)) {
+        Stop-Setup 'Tarnished needs a matching nonempty ER_EXTRACTED table and ER_ANIMATIONS bake'
+    }
+    $Features = @('--features', 'er-data')
+}
 Invoke-Native 'the build' { cargo build --release -p benilla @Features }
 
 Step 'Done'

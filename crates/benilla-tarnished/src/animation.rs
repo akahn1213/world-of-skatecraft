@@ -76,6 +76,10 @@ impl Animation {
         if required
             .iter()
             .any(|name| !clips.joints.iter().any(|j| j == name))
+            || LEFT_ARM
+                .iter()
+                .chain(RIGHT_ARM.iter())
+                .any(|name| !clips.joints.iter().any(|j| j.as_str() == *name))
             || ["Head", "R_Weapon", "L_Weapon"]
                 .iter()
                 .any(|name| !clips.oriented.iter().any(|j| j == name))

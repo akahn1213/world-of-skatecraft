@@ -150,6 +150,58 @@ pub struct BackendInput {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn setup_requires_explicit_opt_in_even_with_leftover_extraction_files() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let scratch = root
+            .join(".setup")
+            .join(format!("tarnished-setup-test-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let table = scratch.join("table.rs");
+        let poses = scratch.join("poses.bin");
+        std::fs::write(&table, b"synthetic setup-only fixture, never compiled").unwrap();
+        std::fs::write(&poses, b"synthetic setup-only fixture, never loaded").unwrap();
+        let source = std::fs::read_to_string(root.join("setup/setup.sh")).unwrap();
+        let fragment = source
+            .split_once("FEATURES=()\n")
+            .unwrap()
+            .1
+            .split_once("\nstep \"Done\"")
+            .unwrap()
+            .0;
+        let script = format!(
+            "set -e\n\
+             die() {{ exit 1; }}\n\
+             packages_hint() {{ :; }}\n\
+             cargo() {{ printf '%s\\n' \"$@\"; }}\n\
+             python3() {{ echo unexpected-extraction >&2; exit 90; }}\n\
+             FEATURES=()\n{fragment}"
+        );
+        let run = |flag| {
+            std::process::Command::new("bash")
+                .arg("-c")
+                .arg(&script)
+                .env("ROOT", &root)
+                .env("ER_EXTRACTED", &table)
+                .env("ER_ANIMATIONS", &poses)
+                .env("WOW_TARNISHED", flag)
+                .output()
+                .unwrap()
+        };
+        let ordinary = run("0");
+        let opted_in = run("1");
+        std::fs::write(&poses, []).unwrap();
+        let incomplete = run("1");
+        std::fs::remove_dir_all(&scratch).unwrap();
+        assert!(ordinary.status.success());
+        assert!(!String::from_utf8_lossy(&ordinary.stdout).contains("er-data"));
+        assert!(opted_in.status.success());
+        assert!(String::from_utf8_lossy(&opted_in.stdout).contains("--features\ner-data"));
+        assert!(!incomplete.status.success());
+        assert!(String::from_utf8_lossy(&incomplete.stderr).contains("unexpected-extraction"));
+    }
+
     #[test]
     fn unavailable_names_the_feature_and_the_fix() {
         let msg = unavailable();

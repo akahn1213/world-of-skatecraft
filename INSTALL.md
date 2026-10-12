@@ -41,9 +41,10 @@ path for a relocated player build. Nothing generated may be committed. Sound bak
 included. No live combat run is claimed.
 
 Alternatively, set `WOW_TARNISHED=1` together with `ER_FILES` and `ER_GAME_DIR` before running
-normal setup: it extracts both inputs and builds the release launcher with `er-data`. Normal
-setup also enables `er-data` automatically when both generated files already exist, including
-on Windows. `play.sh` / `play.bat` select the baked animation file; they run the release binary
+normal setup: it extracts both inputs if needed and builds the release launcher with `er-data`. Normal
+setup reuses already-prepared inputs, including on Windows, but enables `er-data` only with
+this explicit flag; leftover extraction files cannot silently change an ordinary build.
+`play.sh` / `play.bat` select the baked animation file; they run the release binary
 that setup built. Upstream is a binary-only Bevy 0.19 sandbox, so the bridge vendors exact
 pinned sources and isolates its math rather than adding an invalid Cargo git library dependency
 or upgrading the WoW renderer.
