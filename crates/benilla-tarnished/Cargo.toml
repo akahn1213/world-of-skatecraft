@@ -1,0 +1,22 @@
+[package]
+name = "benilla-tarnished"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+benilla-protocol = { path = "../benilla-protocol" }
+glam = "0.31"
+
+[features]
+# The vendored ELDEN RING simulation (third_party/elden-ring-combat-rewrite) is driven by an
+# action table generated from the player's own copy of the game, which is never in the repository.
+# `er-data` wires that simulation in; it is OFF by default, so an ordinary build touches no
+# game-derived data and the data-independent WoW integration below always compiles and is tested.
+# A build that turns `er-data` on without having generated the data fails at build time with a
+# precise message pointing at the setup instructions (see build.rs).
+er-data = []
