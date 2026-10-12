@@ -18,6 +18,7 @@
 pub mod attack;
 pub mod defence;
 pub mod profile;
+pub mod runtime;
 pub mod scale;
 pub mod weapon;
 #[cfg(feature = "er-data")]
@@ -45,8 +46,8 @@ pub fn unavailable() -> &'static str {
     "Tarnished combat is unavailable: this build has no ELDEN RING action table.\n\
      It is generated from your own copy of the game and is never shipped. Follow the \
      \"Tarnished combat\" section of README.md / INSTALL.md to unpack your ELDEN RING files and \
-     run python3 setup/tarnished.py, then build benilla-tarnished with the `er-data` feature. \
-     The app/server combat loop is not yet integrated. The rest of benilla, \
+     run python3 setup/tarnished.py, then build benilla with the `er-data` feature. \
+     The rest of benilla, \
      including skating, is unaffected."
 }
 
@@ -58,7 +59,7 @@ pub fn unavailable() -> &'static str {
 /// The methods here are the seam the real state machine (`Player::step`, `active_hit`,
 /// `receive_hit`) is adapted onto; the adapter itself lives behind `er-data` so the default build
 /// never references the vendored module.
-pub trait Backend {
+pub trait Backend: Send + Sync {
     /// Advance the local character's state machine by one fixed 60 Hz tick.
     fn step(&mut self, input: BackendInput);
     /// The blade's swept path this tick, if an attack is in its active frames.
@@ -69,6 +70,33 @@ pub trait Backend {
     fn guard(&self, stamina_damage: f32, source_facing_dot: f32) -> Option<defence::Guard>;
     /// A dodge-roll i-frame is open this instant.
     fn invincible(&self) -> bool;
+    /// Collision-resolved host transform, in metres and the reference's yaw convention.
+    fn set_transform(&mut self, position: [f32; 3], yaw: f32);
+    fn state(&self) -> BackendState;
+    /// Synchronize health with the WoW descriptor; the reference never owns death or respawn.
+    fn set_health(&mut self, fraction: f32);
+    /// The already-selected outcome, without another passive avoidance roll.
+    fn react(
+        &mut self,
+        outcome: benilla_protocol::tarnished::DefenceOutcome,
+        stamina_damage: f32,
+        source: [f32; 3],
+    );
+    /// Normalize a stock attack onto the reference armament, rather than inventing a stamina cost.
+    fn stock_stamina_damage(&self, damage_ratio: f32) -> f32;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BackendState {
+    pub position: [f32; 3],
+    pub yaw: f32,
+    pub stamina: f32,
+    /// Changes for every attack action and every separate active window of a multi-hit action.
+    pub contact_window: u64,
+    pub weapon_class: u8,
+    pub attack_kind: u8,
+    /// Host-visible action: 0 idle, 100+attack kind, 2 roll, 3 guard reaction, 4 guard break, 5 hurt.
+    pub action: u16,
 }
 
 /// One tick of controller intent handed to a [`Backend`]. Engine-free so the trait stays in the
@@ -82,6 +110,8 @@ pub struct BackendInput {
     pub heavy_attack: bool,
     pub guard: bool,
     pub dodge: bool,
+    pub camera_yaw: f32,
+    pub target: Option<[f32; 3]>,
     /// Host timestamp delta; the reference backend still advances exactly one 60 Hz tick per call.
     pub dt: f32,
 }
