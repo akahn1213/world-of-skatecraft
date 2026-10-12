@@ -1,0 +1,1318 @@
+diff --git a/src/game/CMakeLists.txt b/src/game/CMakeLists.txt
+--- a/src/game/CMakeLists.txt
++++ b/src/game/CMakeLists.txt
+@@ -20,6 +20,7 @@
+     AuraRemovalMgr.cpp
+     AutoBroadCastMgr.cpp
+     Skatecraft.cpp
++    Tarnished.cpp
+     Camera.cpp
+     Conditions.cpp
+     CreatureGroups.cpp
+@@ -254,6 +255,7 @@
+     AuraRemovalMgr.h
+     AutoBroadCastMgr.h
+     Skatecraft.h
++    Tarnished.h
+     Camera.h
+     ClientDefines.h
+     Conditions.h
+diff --git a/src/game/Handlers/CharacterHandler.cpp b/src/game/Handlers/CharacterHandler.cpp
+--- a/src/game/Handlers/CharacterHandler.cpp
++++ b/src/game/Handlers/CharacterHandler.cpp
+@@ -447,6 +447,7 @@
+         alreadyOnline = true;
+         pCurrChar->GetSession()->SetPlayer(nullptr);
+         Skatecraft::ResetVisualSession(pCurrChar);
++        Tarnished::Clear(pCurrChar, true);
+         pCurrChar->SetSession(this);
+ 
+         // Need to attach packet bcaster to the new socket
+diff --git a/src/game/Handlers/ChatHandler.cpp b/src/game/Handlers/ChatHandler.cpp
+--- a/src/game/Handlers/ChatHandler.cpp
++++ b/src/game/Handlers/ChatHandler.cpp
+@@ -168,6 +168,8 @@
+     }
+     if (packet.lang == LANG_ADDON && _player && Skatecraft::HandleAddonMessage(_player, packet.message))
+         return;
++    if (packet.lang == LANG_ADDON && _player && Tarnished::Addon(_player, packet.message))
++        return;
+ 
+     if (!IsLanguageAllowedForChatType(packet.lang, packet.type))
+     {
+diff --git a/src/game/Objects/Object.cpp b/src/game/Objects/Object.cpp
+--- a/src/game/Objects/Object.cpp
++++ b/src/game/Objects/Object.cpp
+@@ -375,7 +375,10 @@
+     BuildValuesUpdate(updatetype, &buf, &updateMask, target);
+     // Retained extension poses follow the entire create batch on the same socket.
+     if (Player const* sender = ToPlayer())
++    {
+         Skatecraft::QueueVisualCreate(sender, target, data);
++        Tarnished::QueueCreate(sender, target, data);
++    }
+ }
+ 
+ void Object::SendCreateUpdateToPlayer(Player* player)
+diff --git a/src/game/Objects/Player.cpp b/src/game/Objects/Player.cpp
+--- a/src/game/Objects/Player.cpp
++++ b/src/game/Objects/Player.cpp
+@@ -1115,6 +1115,7 @@
+         return;
+ 
+     Skatecraft::ExpireVisual(this);
++    Tarnished::Update(this);
+     UpdateMirrorTimers(update_diff);
+ 
+     //used to implement delayed far teleports
+@@ -2195,6 +2196,7 @@
+     // The player should only be added when logging in
+     Unit::AddToWorld();
+     skateVisual.mapEntry = WorldTimer::getMSTime();
++    tarnished.entry = WorldTimer::getMSTime();
+ 
+     for (int i = PLAYER_SLOT_START; i < PLAYER_SLOT_END; ++i)
+     {
+@@ -2207,6 +2209,7 @@
+ void Player::RemoveFromWorld()
+ {
+     Skatecraft::ClearVisual(this);
++    Tarnished::Clear(this);
+     if (m_transport)
+         SendDestroyGroupMembers(true);
+ 
+diff --git a/src/game/Objects/Player.h b/src/game/Objects/Player.h
+--- a/src/game/Objects/Player.h
++++ b/src/game/Objects/Player.h
+@@ -1672,6 +1672,7 @@
+     public:
+         void AddToWorld() override;
+         Skatecraft::VisualState skateVisual;
++        Tarnished::State tarnished;
+         void RemoveFromWorld() override;
+ 
+         /* Switch from instanceId of same map.
+diff --git a/src/game/Objects/SpellCaster.cpp b/src/game/Objects/SpellCaster.cpp
+--- a/src/game/Objects/SpellCaster.cpp
++++ b/src/game/Objects/SpellCaster.cpp
+@@ -222,15 +222,26 @@
+                             pSpellEntry->HasAttribute(SPELL_ATTR_EX3_NORMAL_RANGED_ATTACK) ?
+                             SPELL_DAMAGE_CLASS_RANGED : pSpellEntry->DmgClass;
+ 
++    auto remember = [&](SpellMissInfo result)
++    {
++        if (pSpell && ToUnit() && Tarnished::SpellSupported(pSpellEntry) &&
++            Tarnished::Active(pVictim) && ToUnit()->CanAttack(pVictim))
++        {
++            // Keep the native roll only as fallback; a designated answer replaces it, not adds to it.
++            pSpell->m_tarnishedStockMiss = result;
++            return SPELL_MISS_NONE;
++        }
++        return result;
++    };
+     switch (dmgClass)
+     {
+         case SPELL_DAMAGE_CLASS_NONE:
+             return SPELL_MISS_NONE;
+         case SPELL_DAMAGE_CLASS_MAGIC:
+-            return MagicSpellHitResult(pVictim, pSpellEntry, pSpell);
++            return remember(MagicSpellHitResult(pVictim, pSpellEntry, pSpell));
+         case SPELL_DAMAGE_CLASS_MELEE:
+         case SPELL_DAMAGE_CLASS_RANGED:
+-            return MeleeSpellHitResult(pVictim, pSpellEntry, pSpell, pIsCrit, pMeleeHitInfo);
++            return remember(MeleeSpellHitResult(pVictim, pSpellEntry, pSpell, pIsCrit, pMeleeHitInfo));
+     }
+     return SPELL_MISS_NONE;
+ }
+diff --git a/src/game/Objects/Unit.cpp b/src/game/Objects/Unit.cpp
+--- a/src/game/Objects/Unit.cpp
++++ b/src/game/Objects/Unit.cpp
+@@ -1306,7 +1306,7 @@
+     CallForAllControlledUnits(PetOwnerKilledUnitHelper(pVictim), CONTROLLED_MINIPET | CONTROLLED_GUARDIANS);
+ }
+ 
+-void Unit::CalculateMeleeDamage(Unit* pVictim, uint32 damage, CalcDamageInfo* damageInfo, WeaponAttackType attackType)
++void Unit::CalculateMeleeDamage(Unit* pVictim, uint32 damage, CalcDamageInfo* damageInfo, WeaponAttackType attackType, bool deferred)
+ {
+     damageInfo->attacker = this;
+     damageInfo->target = pVictim;
+@@ -1388,7 +1388,44 @@
+     }
+ 
+     // Sets damageInfo->hitOutCome
+-    RollMeleeOutcomeAgainst(damageInfo->hitOutCome, damageInfo->HitInfo, damageInfo->target, damageInfo->attackType);
++    if (!deferred)
++        FinishMeleeCalculation(damageInfo, nullptr, true);
++}
++
++void Unit::FinishMeleeCalculation(CalcDamageInfo* damageInfo, Tarnished::Answer const* answer, bool stock, bool designatedOffence)
++{
++    Unit* pVictim = damageInfo->target;
++    if (damageInfo->TargetState == VICTIMSTATE_IS_IMMUNE)
++        return;
++    if (stock && !answer)
++    {
++        uint32 offence = damageInfo->HitInfo & (HITINFO_CRITICALHIT | HITINFO_GLANCING);
++        RollMeleeOutcomeAgainst(damageInfo->hitOutCome, damageInfo->HitInfo, pVictim, damageInfo->attackType);
++        if (designatedOffence)
++        {
++            // The incapable defender's avoidance is still server-owned, but offence is not re-rolled.
++            damageInfo->HitInfo &= ~(HITINFO_CRITICALHIT | HITINFO_GLANCING | HITINFO_CRUSHING);
++            damageInfo->HitInfo |= offence;
++            if (damageInfo->hitOutCome == MELEE_HIT_CRIT || damageInfo->hitOutCome == MELEE_HIT_GLANCING ||
++                damageInfo->hitOutCome == MELEE_HIT_CRUSHING)
++                damageInfo->hitOutCome = MELEE_HIT_NORMAL;
++        }
++    }
++    else
++    {
++        damageInfo->hitOutCome = MELEE_HIT_NORMAL;
++        if (answer)
++        {
++            switch (answer->outcome)
++            {
++                case 0: damageInfo->hitOutCome = MELEE_HIT_MISS; break;
++                case 1: damageInfo->hitOutCome = MELEE_HIT_DODGE; break;
++                case 2: damageInfo->hitOutCome = MELEE_HIT_PARRY; break;
++                case 3: damageInfo->hitOutCome = MELEE_HIT_BLOCK; break;
++                default: break;
++            }
++        }
++    }
+ 
+     switch (damageInfo->hitOutCome)
+     {
+@@ -1464,7 +1501,7 @@
+         {
+             damageInfo->TargetState = VICTIMSTATE_NORMAL;
+             damageInfo->procEx |= PROC_EX_BLOCK;
+-            damageInfo->blocked_amount = damageInfo->target->GetShieldBlockValue();
++            damageInfo->blocked_amount = answer ? answer->absorbed : damageInfo->target->GetShieldBlockValue();
+             if (damageInfo->blocked_amount >= damageInfo->subDamage[0].damage)
+             {
+                 damageInfo->TargetState = VICTIMSTATE_BLOCKS;
+@@ -1917,7 +1954,7 @@
+     {25, 55, 16, 3, 1, 75} // 300
+ };
+ 
+-void Unit::CalculateDamageAbsorbAndResist(SpellCaster* pCaster, SpellSchoolMask schoolMask, DamageEffectType damagetype, uint32 const damage, uint32* absorb, int32* resist, SpellEntry const* spellProto, Spell* spell)
++void Unit::CalculateDamageAbsorbAndResist(SpellCaster* pCaster, SpellSchoolMask schoolMask, DamageEffectType damagetype, uint32 const damage, uint32* absorb, int32* resist, SpellEntry const* spellProto, Spell* spell, bool skipResistance)
+ {
+     if (!pCaster || !IsAlive() || !damage)
+         return;
+@@ -1934,25 +1971,9 @@
+ 
+     int32 remainingDamage = int32(damage);
+ 
+-    // Magic damage, check for resists
+-    bool canResist = (schoolMask & SPELL_SCHOOL_MASK_NORMAL) == 0;
+-
+-    // NOSTALRIUS: Binary spells are not resisted.
+-    if (canResist && spellProto && spellProto->IsBinary())
+-        canResist = false;
+-    else if (spellProto && spellProto->AttributesEx4 & SPELL_ATTR_EX4_IGNORE_RESISTANCES)
+-        canResist = false;
+-
+-    float const resistanceChance = pCaster->GetSpellResistChance(this, schoolMask, true);
+-
+-    if (canResist || (resistanceChance < 0))
+-    {
+-        float const multiplier = RollMagicResistanceMultiplierOutcomeAgainst(resistanceChance, schoolMask, damagetype, spellProto);
+-        *resist = rand_dither(int64(damage) * multiplier);
+-        remainingDamage -= *resist;
+-    }
+-    else
+-        *resist = 0;
++    if (!skipResistance)
++        *resist = CalculateDamageResistance(pCaster, schoolMask, damagetype, damage, spellProto);
++    remainingDamage -= *resist;
+ 
+     auto HandleSchoolAbsorb = [&]()
+     {
+@@ -2202,16 +2223,17 @@
+     *absorb = damage - remainingDamage - *resist;
+ }
+ 
+-void Unit::CalculateAbsorbResistBlock(SpellCaster* pCaster, SpellNonMeleeDamage* damageInfo, SpellEntry const* spellProto, WeaponAttackType attType, Spell* spell)
++void Unit::CalculateAbsorbResistBlock(SpellCaster* pCaster, SpellNonMeleeDamage* damageInfo, SpellEntry const* spellProto, WeaponAttackType attType, Spell* spell, bool designated, bool skipResistance)
+ {
+     bool blocked = false;
++    uint32 unblocked = damageInfo->damage;
+     // Get blocked status
+     switch (spellProto->DmgClass)
+     {
+         // Melee and Ranged Spells
+         case SPELL_DAMAGE_CLASS_RANGED:
+         case SPELL_DAMAGE_CLASS_MELEE:
+-            blocked = IsSpellPartiallyBlocked(pCaster, spellProto, attType);
++            blocked = !designated && IsSpellPartiallyBlocked(pCaster, spellProto, attType);
+             break;
+         default:
+             break;
+@@ -2225,15 +2247,77 @@
+         damageInfo->damage -= damageInfo->blocked;
+     }
+ 
+-    CalculateDamageAbsorbAndResist(pCaster, spellProto->GetSpellSchoolMask(), SPELL_DIRECT_DAMAGE, damageInfo->damage, &damageInfo->absorb, &damageInfo->resist, spellProto, spell);
++    if (skipResistance && unblocked && blocked)
++        damageInfo->resist = int32(int64(damageInfo->resist) * damageInfo->damage / unblocked);
++    CalculateDamageAbsorbAndResist(pCaster, spellProto->GetSpellSchoolMask(), SPELL_DIRECT_DAMAGE, damageInfo->damage, &damageInfo->absorb, &damageInfo->resist, spellProto, spell, skipResistance);
+     uint32 const bonus = (damageInfo->resist < 0 ? uint32(std::abs(damageInfo->resist)) : 0);
+     damageInfo->damage += bonus;
+     uint32 const malus = (damageInfo->resist > 0 ? (damageInfo->absorb + uint32(damageInfo->resist)) : damageInfo->absorb);
+     damageInfo->damage = (damageInfo->damage <= malus ? 0 : (damageInfo->damage - malus));
+ }
+ 
++int32 Unit::CalculateDamageResistance(SpellCaster* caster, SpellSchoolMask school, DamageEffectType type, uint32 damage, SpellEntry const* spell)
++{
++    if (!caster || !damage || !IsAlive())
++        return 0;
++    bool canResist = (school & SPELL_SCHOOL_MASK_NORMAL) == 0;
++    if (spell && (spell->IsBinary() || (spell->AttributesEx4 & SPELL_ATTR_EX4_IGNORE_RESISTANCES)))
++        canResist = false;
++    float chance = caster->GetSpellResistChance(this, school, true);
++    if (!canResist && chance >= 0)
++        return 0;
++    float multiplier = RollMagicResistanceMultiplierOutcomeAgainst(chance, school, type, spell);
++    return rand_dither(int64(damage) * multiplier);
++}
++
++void Unit::CalculateTarnishedMelee(Unit* target, uint32 damage, uint8 flags, CalcDamageInfo* hit)
++{
++    hit->attacker = this;
++    hit->target = target;
++    hit->attackType = BASE_ATTACK;
++    hit->subDamage[0].damageSchoolMask = SPELL_SCHOOL_MASK_NORMAL;
++    hit->procAttacker = PROC_FLAG_DEAL_MELEE_SWING | PROC_FLAG_MAIN_HAND_WEAPON_SWING;
++    hit->procVictim = PROC_FLAG_TAKE_MELEE_SWING;
++    SetDamageIndependentHitInfoFlags(hit->HitInfo, target, BASE_ATTACK);
++    if (target->IsImmuneToDamage(SPELL_SCHOOL_MASK_NORMAL))
++    {
++        hit->TargetState = VICTIMSTATE_IS_IMMUNE;
++        hit->procEx = PROC_EX_IMMUNE;
++        return;
++    }
++    hit->totalDamage = rand_ditheru(CalcArmorReducedDamage(target, damage));
++    hit->subDamage[0].damage = hit->totalDamage;
++    hit->cleanDamage = damage - hit->totalDamage;
++    if (flags & 1)
++        hit->HitInfo |= HITINFO_CRITICALHIT;
++    if (flags & 2)
++        hit->HitInfo |= HITINFO_GLANCING;
++}
++
++void Unit::FinishTarnishedMelee(CalcDamageInfo* hit, Tarnished::Answer const* answer, bool stock)
++{
++    if (!hit->target->IsAlive() || !IsAlive() || GetMap() != hit->target->GetMap())
++        return;
++    FinishMeleeCalculation(hit, answer, true, !stock);
++    // Designated offence already included these modifiers in the supplied amount.
++    if (hit->hitOutCome == MELEE_HIT_MISS || hit->hitOutCome == MELEE_HIT_DODGE ||
++        hit->hitOutCome == MELEE_HIT_PARRY)
++        hit->HitInfo &= ~(HITINFO_CRITICALHIT | HITINFO_GLANCING | HITINFO_CRUSHING);
++    if (!stock && hit->totalDamage && (hit->HitInfo & HITINFO_CRITICALHIT) &&
++        (hit->hitOutCome == MELEE_HIT_NORMAL || hit->hitOutCome == MELEE_HIT_BLOCK))
++    {
++        hit->procEx &= ~PROC_EX_NORMAL_HIT;
++        hit->procEx |= PROC_EX_CRITICAL_HIT;
++        if (hit->hitOutCome == MELEE_HIT_NORMAL)
++            hit->hitOutCome = MELEE_HIT_CRIT;
++    }
++    ApplyMeleeDamage(*hit);
++}
++
+ void Unit::AttackerStateUpdate(Unit* pVictim, WeaponAttackType attType, bool extra)
+ {
++    if (Tarnished::Active(this))
++        return; // the negotiated client, not autoattack, owns the swing
+     if (!pVictim->IsAlive())
+         return;
+ 
+@@ -2258,7 +2342,61 @@
+     }
+ 
+     CalcDamageInfo damageInfo;
+-    CalculateMeleeDamage(pVictim, 0, &damageInfo, attType);
++    bool deferred = Tarnished::Active(pVictim) && GetWeaponDamageCount(attType) == 1 &&
++        GetMeleeDamageSchoolMask() == SPELL_SCHOOL_MASK_NORMAL;
++    CalculateMeleeDamage(pVictim, 0, &damageInfo, attType, deferred);
++    if (deferred)
++    {
++        // Save one native outcome for timeout, including offence; accepted defence replaces only avoidance.
++        MeleeHitOutcome fallbackOutcome;
++        RollMeleeOutcomeAgainst(fallbackOutcome, damageInfo.HitInfo, pVictim, attType);
++        if (fallbackOutcome == MELEE_HIT_CRIT)
++        {
++            int32 mod = GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_CRIT_PERCENT_VERSUS, pVictim->GetCreatureTypeMask());
++            damageInfo.totalDamage = uint32(damageInfo.totalDamage * ((200.f + mod) / 100.f));
++        }
++        else if (fallbackOutcome == MELEE_HIT_CRUSHING)
++            damageInfo.totalDamage += damageInfo.totalDamage / 2;
++        else if (fallbackOutcome == MELEE_HIT_GLANCING)
++        {
++            float multiplier = GetGlancingBlowDamageMultiplier(pVictim, attType);
++            damageInfo.cleanDamage += uint32((1.f - multiplier) * damageInfo.totalDamage);
++            damageInfo.totalDamage = uint32(multiplier * damageInfo.totalDamage);
++        }
++        damageInfo.subDamage[0].damage = damageInfo.totalDamage;
++        Tarnished::Answer fallback;
++        fallback.taken = damageInfo.totalDamage;
++        switch (fallbackOutcome)
++        {
++            case MELEE_HIT_MISS: fallback.outcome = 0; break;
++            case MELEE_HIT_DODGE: fallback.outcome = 1; break;
++            case MELEE_HIT_PARRY: fallback.outcome = 2; break;
++            case MELEE_HIT_BLOCK:
++                fallback.outcome = 3;
++                fallback.absorbed = std::min(damageInfo.totalDamage, pVictim->GetShieldBlockValue());
++                fallback.taken -= fallback.absorbed;
++                break;
++            default: break;
++        }
++        auto finish = [damageInfo, fallback](Unit* source, Player* defender, Tarnished::Answer const* answer) mutable
++        {
++            if (!source)
++                return;
++            damageInfo.attacker = source;
++            damageInfo.target = defender;
++            source->FinishTarnishedMelee(&damageInfo, answer ? answer : &fallback, false);
++        };
++        if (Tarnished::Defer(this, pVictim->ToPlayer(), damageInfo.totalDamage, 0, true, finish))
++            return;
++        FinishTarnishedMelee(&damageInfo, &fallback, false);
++        return;
++    }
++    ApplyMeleeDamage(damageInfo);
++}
++
++void Unit::ApplyMeleeDamage(CalcDamageInfo& damageInfo)
++{
++    Unit* pVictim = damageInfo.target;
+ 
+     ProcDamageAndSpell(ProcSystemArguments(damageInfo.target, damageInfo.procAttacker, damageInfo.procVictim, damageInfo.procEx, damageInfo.totalDamage, damageInfo.totalDamage + damageInfo.totalAbsorb + damageInfo.totalResist, damageInfo.attackType));
+ 
+@@ -8276,6 +8414,7 @@
+ void Unit::RemoveFromWorld()
+ {
+     // cleanup
++    Tarnished::ClearSource(this);
+     if (IsInWorld())
+     {
+         Uncharm();
+diff --git a/src/game/Objects/Unit.h b/src/game/Objects/Unit.h
+--- a/src/game/Objects/Unit.h
++++ b/src/game/Objects/Unit.h
+@@ -26,6 +26,7 @@
+ #include "SharedDefines.h"
+ #include "ItemPrototype.h"
+ #include "SpellCaster.h"
++#include "Tarnished.h"
+ #include "UnitDefines.h"
+ #include "SpellAuraDefines.h"
+ #include "UpdateFields.h"
+@@ -820,8 +821,9 @@
+         float SpellDamageBonusTaken(SpellCaster const* pCaster, SpellEntry const* spellProto, SpellEffectIndex effectIndex, float pdamage, DamageEffectType damagetype, uint32 stack = 1, Spell* spell = nullptr) const;
+         int32 SpellBaseHealingBonusTaken(SpellSchoolMask schoolMask) const;
+         float SpellHealingBonusTaken(SpellCaster const* pCaster, SpellEntry const* spellProto, SpellEffectIndex effectIndex, float healamount, DamageEffectType damagetype, uint32 stack = 1, Spell* spell = nullptr) const;
+-        void CalculateDamageAbsorbAndResist(SpellCaster* pCaster, SpellSchoolMask schoolMask, DamageEffectType damagetype, uint32 const damage, uint32* absorb, int32* resist, SpellEntry const* spellProto = nullptr, Spell* spell = nullptr);
+-        void CalculateAbsorbResistBlock(SpellCaster* pCaster, SpellNonMeleeDamage* damageInfo, SpellEntry const* spellProto, WeaponAttackType attType = BASE_ATTACK, Spell* spell = nullptr);
++        int32 CalculateDamageResistance(SpellCaster*, SpellSchoolMask, DamageEffectType, uint32, SpellEntry const*);
++        void CalculateDamageAbsorbAndResist(SpellCaster* pCaster, SpellSchoolMask schoolMask, DamageEffectType damagetype, uint32 const damage, uint32* absorb, int32* resist, SpellEntry const* spellProto = nullptr, Spell* spell = nullptr, bool skipResistance = false);
++        void CalculateAbsorbResistBlock(SpellCaster* pCaster, SpellNonMeleeDamage* damageInfo, SpellEntry const* spellProto, WeaponAttackType attType = BASE_ATTACK, Spell* spell = nullptr, bool designated = false, bool skipResistance = false);
+         float RollMagicResistanceMultiplierOutcomeAgainst(float resistanceChance, SpellSchoolMask schoolMask, DamageEffectType dmgType, SpellEntry const* spellProto) const;
+         bool IsSpellPartiallyBlocked(SpellCaster const* pCaster, SpellEntry const* spellProto, WeaponAttackType attackType = BASE_ATTACK) const;
+         bool RollSpellBlockChanceOutcome(SpellCaster const* pCaster, WeaponAttackType attackType) const;
+@@ -990,7 +992,11 @@
+         void UpdateReactives(uint32 p_time);
+ 
+         virtual float GetWeaponBasedAuraModifier(WeaponAttackType attType, AuraType auraType) const = 0;
+-        void CalculateMeleeDamage(Unit* pVictim, uint32 damage, CalcDamageInfo* damageInfo, WeaponAttackType attackType = BASE_ATTACK);
++        void CalculateMeleeDamage(Unit* pVictim, uint32 damage, CalcDamageInfo* damageInfo, WeaponAttackType attackType = BASE_ATTACK, bool deferred = false);
++        void FinishMeleeCalculation(CalcDamageInfo*, Tarnished::Answer const*, bool stock, bool designatedOffence = false);
++        void ApplyMeleeDamage(CalcDamageInfo&);
++        void CalculateTarnishedMelee(Unit*, uint32, uint8, CalcDamageInfo*);
++        void FinishTarnishedMelee(CalcDamageInfo*, Tarnished::Answer const*, bool stock);
+         void UnitDamaged(ObjectGuid from, uint32 damage) { m_damageTakenHistory[from] += damage; m_lastDamageTaken = 0; }
+         void DealMeleeDamage(CalcDamageInfo const* damageInfo, bool durabilityLoss);
+         float CalculateDamage(WeaponAttackType attType, bool normalized, uint8 index = 0) const;
+diff --git a/src/game/Server/Protocol/Opcodes.cpp b/src/game/Server/Protocol/Opcodes.cpp
+--- a/src/game/Server/Protocol/Opcodes.cpp
++++ b/src/game/Server/Protocol/Opcodes.cpp
+@@ -69,6 +69,8 @@
+ 
+     // Correspondence between opcodes and their names
+     DEFINE_HANDLER(CMSG_SKATECRAFT_VISUAL, STATUS_LOGGEDIN, PACKET_PROCESS_MAP, &WorldSession::HandleSkatecraftVisual);
++    DEFINE_HANDLER(CMSG_TARNISHED, STATUS_LOGGEDIN, PACKET_PROCESS_MAP, &WorldSession::HandleTarnished);
++    INVALID_PACKET(SMSG_TARNISHED, UnhandleReason::SendByServer);
+     INVALID_PACKET(SMSG_SKATECRAFT_VISUAL, UnhandleReason::SendByServer);
+     INVALID_PACKET(MSG_NULL_ACTION,                   UnhandleReason::Invalid);
+     INVALID_PACKET(CMSG_BOOTME,                       UnhandleReason::Unhandled);
+diff --git a/src/game/Server/Protocol/Opcodes_1_12_1.h b/src/game/Server/Protocol/Opcodes_1_12_1.h
+--- a/src/game/Server/Protocol/Opcodes_1_12_1.h
++++ b/src/game/Server/Protocol/Opcodes_1_12_1.h
+@@ -828,5 +828,7 @@
+     // World of Skatecraft extension; outside the stock 1.12.1 opcode range.
+     CMSG_SKATECRAFT_VISUAL                 = 0x03f0,
+     SMSG_SKATECRAFT_VISUAL                 = 0x03f1,
+-    NUM_MSG_TYPES                          = 0x03f2
++    CMSG_TARNISHED                         = 0x03f2,
++    SMSG_TARNISHED                         = 0x03f3,
++    NUM_MSG_TYPES                          = 0x03f4
+ };
+diff --git a/src/game/Server/WorldSession.cpp b/src/game/Server/WorldSession.cpp
+--- a/src/game/Server/WorldSession.cpp
++++ b/src/game/Server/WorldSession.cpp
+@@ -319,6 +319,9 @@
+         auto const* chatMessage = dynamic_cast<WorldPackets::Chat::ChatMessage const*>(packet.get());
+         MANGOS_ASSERT(chatMessage); // Should never happen if it's coming from `QueueBinaryPacket`
+         processingStrategy = GetChatPacketProcessingType(chatMessage->type);
++        if (chatMessage->lang == LANG_ADDON &&
++            chatMessage->message.compare(0, 10, "TARNISHED\t") == 0)
++            processingStrategy = PACKET_PROCESS_MAP;
+     }
+ 
+     if (processingStrategy >= PACKET_PROCESS_MAX_TYPE)
+@@ -328,6 +331,21 @@
+     }
+ 
+     // put into the correct processing queue
++    if (packet->GetOpcode() == CMSG_TARNISHED)
++    {
++        auto const* tarnished = dynamic_cast<TarnishedPacket const*>(packet.get());
++        if (!tarnished || tarnished->payload.size() < 2)
++            return;
++        {
++            // Only visual frames coalesce; attacks and defences keep the native ordered queue.
++            std::lock_guard<std::mutex> guard(m_tarnishedPoseMutex);
++            if (tarnished->payload.read<uint8>(1) == 4)
++                m_tarnishedPose = std::move(packet);
++            else if (m_tarnishedCommands.size() < 128)
++                m_tarnishedCommands.push_back(std::move(packet));
++            return;
++        }
++    }
+     m_recvQueue[processingStrategy].add(std::move(packet));
+ }
+ 
+@@ -642,6 +660,31 @@
+             ProcessAnticheatAction("Anticrash", "Exception raised", CHEAT_ACTION_KICK);
+         }
+     }
++    // Native map packets (including addon CAPS) are drained before the negotiated command stream.
++    if (updater.PacketProcessType() == PACKET_PROCESS_MAP && CanProcessPackets())
++    {
++        std::unique_ptr<ClientPacket const> pose;
++        std::deque<std::unique_ptr<ClientPacket const>> commands;
++        {
++            std::lock_guard<std::mutex> guard(m_tarnishedPoseMutex);
++            pose = std::move(m_tarnishedPose);
++            commands.swap(m_tarnishedCommands);
++        }
++        for (auto const& command : commands)
++        {
++            if (!_player || !_player->IsInWorld())
++                break;
++            auto const* frame = static_cast<TarnishedPacket const*>(command.get());
++            if (pose && _player->tarnished.capable)
++            {
++                HandleTarnished(*static_cast<TarnishedPacket const*>(pose.get()));
++                pose.reset();
++            }
++            HandleTarnished(*frame);
++        }
++        if (pose && _player && _player->IsInWorld())
++            HandleTarnished(*static_cast<TarnishedPacket const*>(pose.get()));
++    }
+ }
+ 
+ 
+@@ -649,6 +692,12 @@
+ {
+     ASSERT(type < PACKET_PROCESS_MAX_TYPE);
+     m_recvQueue[type].clear();
++    if (type == PACKET_PROCESS_MAP)
++    {
++        std::lock_guard<std::mutex> guard(m_tarnishedPoseMutex);
++        m_tarnishedPose.reset();
++        m_tarnishedCommands.clear();
++    }
+ }
+ 
+ void WorldSession::SetDisconnectedSession()
+diff --git a/src/game/Server/WorldSession.h b/src/game/Server/WorldSession.h
+--- a/src/game/Server/WorldSession.h
++++ b/src/game/Server/WorldSession.h
+@@ -64,6 +64,7 @@
+ #include "Packets/Trade.h"
+ #include "Packets/Warden.h"
+ #include "Skatecraft.h"
++#include "Tarnished.h"
+ 
+ #include <memory>
+ 
+@@ -503,6 +504,7 @@
+ 
+         // Movement
+         void HandleSkatecraftVisual(SkatecraftVisualPacket const& packet);
++        void HandleTarnished(TarnishedPacket const& packet);
+         void HandleMoveRootAck(WorldPackets::Movement::MoveRootAck const& packet);
+         void HandleMoveKnockBackAck(WorldPackets::Movement::MoveKnockBackAck const& packet);
+         void HandleMoveTeleportAckOpcode(WorldPackets::Movement::MoveTeleportAck const& packet);
+@@ -863,6 +865,9 @@
+         std::shared_ptr<WorldSocket> m_socket;
+         std::string m_remoteIpAddress; // might also be "<BOT>"
+         LockedQueue<std::unique_ptr<ClientPacket const>, std::mutex> m_recvQueue[PACKET_PROCESS_MAX_TYPE];
++        std::mutex m_tarnishedPoseMutex;
++        std::unique_ptr<ClientPacket const> m_tarnishedPose;
++        std::deque<std::unique_ptr<ClientPacket const>> m_tarnishedCommands;
+         bool m_receivedPacketType[PACKET_PROCESS_MAX_TYPE];
+         uint32 m_floodPacketsCount[FLOOD_MAX_OPCODES_TYPE];
+         bool m_connected;
+diff --git a/src/game/Spells/Spell.cpp b/src/game/Spells/Spell.cpp
+--- a/src/game/Spells/Spell.cpp
++++ b/src/game/Spells/Spell.cpp
+@@ -907,12 +907,15 @@
+     targetInfo.meleeHitInfo = 0x0;
+     targetInfo.damage = 0;
+     targetInfo.isCrit = false;
++    targetInfo.tarnishedCandidate = m_casterUnit && Tarnished::SpellSupported(m_spellInfo) &&
++        Tarnished::Active(pTarget) && m_casterUnit->CanAttack(pTarget);
+ 
+     // For melee spells crit outcome is part of the attack table, so MeleeSpellHitResult will set it.
+     nonstd::optional<bool> isCrit;
+ 
+     // Calculate hit result and crit
+     targetInfo.missCondition = m_caster->SpellHitResult(pTarget, m_spellInfo, effIndex, m_canReflect, this, &isCrit, &targetInfo.meleeHitInfo);
++    targetInfo.tarnishedMiss = m_tarnishedStockMiss;
+ 
+     // spell fly from visual cast object
+     SpellCaster* affectiveObject = GetAffectiveCasterObject();
+@@ -1142,6 +1145,59 @@
+     if (!unit)
+         return;
+ 
++    // Hold the native Spell until its target continuation runs; no effects land before defence.
++    if (!target->tarnishedAnswered && target->tarnishedCandidate &&
++        target->missCondition == SPELL_MISS_NONE && m_casterUnit)
++    {
++        if (!m_delayed)
++            HandleDelayedSpellLaunch(target); // native damage/crit/armor exactly once
++        int32 resist = unit->CalculateDamageResistance(m_casterUnit, m_spellSchoolMask,
++            SPELL_DIRECT_DAMAGE, target->damage, m_spellInfo);
++        uint32 amount = resist < 0 ? target->damage + uint32(-resist) :
++            target->damage - std::min(target->damage, uint32(resist));
++        TargetInfo resume = *target;
++        resume.processed = false;
++        resume.tarnishedAnswered = true;
++        resume.tarnishedPrepared = true;
++        resume.tarnishedResist = resist;
++        resume.tarnishedUnresisted = target->damage;
++        resume.damage = amount;
++        SetExecutedCurrently(true);
++        auto finish = [this, resume](Unit* source, Player* defender, Tarnished::Answer const* answer) mutable
++        {
++            SetExecutedCurrently(false);
++            if (!source || !defender->IsAlive())
++                return;
++            // Spell's caster is still on this map; source removal drains its continuations first.
++            SetExecutedCurrently(true);
++            struct Execution
++            {
++                Spell* spell;
++                ~Execution() { spell->SetExecutedCurrently(false); }
++            } execution{this};
++            resume.tarnishedStock = !answer;
++            if (!answer)
++            {
++                resume.missCondition = resume.tarnishedMiss;
++                resume.damage = resume.tarnishedUnresisted;
++            }
++            else if (answer->outcome == 0)
++                resume.missCondition = SPELL_MISS_MISS;
++            else
++            {
++                resume.damage = answer->taken;
++                resume.tarnishedBlock = answer->absorbed;
++            }
++            DoAllEffectOnTarget(&resume);
++        };
++        if (Tarnished::Defer(m_casterUnit, unit->ToPlayer(), amount,
++            uint8(GetFirstSchoolInMask(m_spellSchoolMask)), false, finish))
++            return;
++        // Backpressure is a stock continuation, not immunity or a second damage calculation.
++        finish(m_casterUnit, unit->ToPlayer(), nullptr);
++        return;
++    }
++
+     if (getState() == SPELL_STATE_DELAYED && (WorldTimer::getMSTime() - target->timeDelay) <= unit->m_lastSanctuaryTime && !m_spellInfo->IsPositiveSpell())
+         return;
+ 
+@@ -1194,7 +1250,7 @@
+         procVictim   = PROC_FLAG_NONE;
+     }
+ 
+-    if (m_delayed)
++    if (m_delayed || target->tarnishedPrepared)
+     {
+         // mark effects that were already handled in Spell::HandleDelayedSpellLaunch on spell launch as processed
+         for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i)
+@@ -1367,14 +1423,15 @@
+         }
+     }
+     // Do damage and triggers
+-    else if (m_damage && unitTarget->IsAlive())
++    else if ((m_damage || (target->tarnishedPrepared && target->tarnishedBlock)) &&
++             unitTarget->IsAlive())
+     {
+         // Fill base damage struct (unitTarget - is real spell target)
+         SpellNonMeleeDamage damageInfo(pCaster, unitTarget, m_spellInfo->Id, GetFirstSchoolInMask(m_spellSchoolMask));
+         damageInfo.spell = this;
+         damageInfo.reflected = isReflected;
+ 
+-        if (m_delayed)
++        if (m_delayed || target->tarnishedPrepared)
+         {
+             // Copy damage calculated from HandleDelayedSpellLaunch
+             damageInfo.damage = m_damage;
+@@ -1411,9 +1468,19 @@
+                 damageInfo.damage += damageInfo.damage / 2; // 150% of normal damage
+         }
+ 
+-        uint32 const originalDamage = damageInfo.damage;
+-
+-        unitTarget->CalculateAbsorbResistBlock(pCaster, &damageInfo, m_spellInfo, BASE_ATTACK, this);
++        uint32 const originalDamage = target->tarnishedPrepared ?
++            target->tarnishedUnresisted : damageInfo.damage;
++
++        if (target->tarnishedPrepared && target->tarnishedStock)
++            damageInfo.resist = target->tarnishedResist;
++        unitTarget->CalculateAbsorbResistBlock(pCaster, &damageInfo, m_spellInfo, BASE_ATTACK, this,
++            target->tarnishedPrepared && !target->tarnishedStock, target->tarnishedPrepared);
++        if (target->tarnishedPrepared)
++        {
++            if (!target->tarnishedStock)
++                damageInfo.resist += target->tarnishedResist;
++            damageInfo.blocked += target->tarnishedBlock;
++        }
+         m_absorbed = damageInfo.absorb;
+ 
+         pCaster->DealDamageMods(damageInfo.target, damageInfo.damage, &damageInfo.absorb);
+diff --git a/src/game/Spells/Spell.h b/src/game/Spells/Spell.h
+--- a/src/game/Spells/Spell.h
++++ b/src/game/Spells/Spell.h
+@@ -303,6 +303,7 @@
+         bool IsRangedAttackResetSpell() const { return !m_IsTriggeredSpell && m_spellInfo->IsRangedSpell() && m_spellInfo->HasSpellInterruptFlag(SPELL_INTERRUPT_FLAG_COMBAT); }
+ 
+         bool IsDeletable() const { return !m_referencedFromCurrentSpell && !m_executeStack; }
++        SpellMissInfo m_tarnishedStockMiss = SPELL_MISS_NONE;
+         void SetReferencedFromCurrent(bool yes) { m_referencedFromCurrentSpell = yes; }
+         void SetExecutedCurrently(bool yes) { if (yes) ++m_executeStack; else --m_executeStack; }
+         uint64 GetDelayStart() const { return m_delayStart; }
+@@ -476,6 +477,14 @@
+             bool   processed:1;
+             bool   isCrit : 1;
+             bool   deleted:1;
++            bool tarnishedPrepared = false;
++            bool tarnishedAnswered = false;
++            bool tarnishedStock = false;
++            int32 tarnishedResist = 0;
++            uint32 tarnishedBlock = 0;
++            bool tarnishedCandidate = false;
++            SpellMissInfo tarnishedMiss = SPELL_MISS_NONE;
++            uint32 tarnishedUnresisted = 0;
+         };
+ 
+         struct GOTargetInfo
+diff --git a/src/game/Tarnished.cpp b/src/game/Tarnished.cpp
+new file mode 100644
+--- /dev/null
++++ b/src/game/Tarnished.cpp
+@@ -0,0 +1,485 @@
++// SPDX-License-Identifier: MIT OR Apache-2.0
++// v1 wire layout: crates/benilla-protocol/src/tarnished.rs.
++#include "Tarnished.h"
++#include "Chat.h"
++#include "Player.h"
++#include "Map.h"
++#include "Timer.h"
++#include "Opcodes.h"
++#include "UpdateData.h"
++#include "PlayerBroadcaster.h"
++#include <atomic>
++#include <cmath>
++#include <limits>
++#include <random>
++#include <unordered_set>
++
++namespace Tarnished
++{
++    static bool Newer(uint32 value, uint32 previous)
++    {
++        uint32 delta = value - previous;
++        return delta && delta < 0x80000000u;
++    }
++
++    static bool Equipped(Player const* player)
++    {
++        Item* sword = player->GetWeaponForAttack(BASE_ATTACK, true, true);
++        Item* shield = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND);
++        return player->GetClass() == CLASS_WARRIOR && sword && shield && !shield->IsBroken() &&
++            sword->GetProto()->Class == ITEM_CLASS_WEAPON &&
++            sword->GetProto()->SubClass == ITEM_SUBCLASS_WEAPON_SWORD &&
++            shield->GetProto()->Class == ITEM_CLASS_ARMOR &&
++            shield->GetProto()->SubClass == ITEM_SUBCLASS_ARMOR_SHIELD &&
++            !player->IsMounted() && !player->IsNoWeaponShapeShift();
++    }
++
++    bool Active(Unit const* unit)
++    {
++        Player const* player = unit ? unit->ToPlayer() : nullptr;
++        return player && player->IsInWorld() && player->IsAlive() &&
++            !player->IsBeingTeleported() && player->tarnished.capable &&
++            player->tarnished.active && Equipped(player) &&
++            WorldTimer::getMSTimeDiff(player->tarnished.poseReceipt, WorldTimer::getMSTime()) <= 2000;
++    }
++
++    static bool Allowed(Unit const* source, Unit const* target, bool melee)
++    {
++        return source && target && source != target && source->IsInWorld() && target->IsInWorld() &&
++            (source->IsAlive() || !melee) && target->IsAlive() && source->GetMap() == target->GetMap() &&
++            source->CanAttack(target) && source->IsWithinLOSInMap(target) &&
++            (!melee || source->IsWithinDistInMap(target, 8.f)) &&
++            !(target->IsCreature() && target->ToCreature()->IsInEvadeMode());
++    }
++
++    bool SpellSupported(SpellEntry const* spell)
++    {
++        for (unsigned i = 0; i < MAX_EFFECT_INDEX; ++i)
++            if (spell->Effect[i] != SPELL_EFFECT_NONE &&
++                spell->Effect[i] != SPELL_EFFECT_APPLY_AURA &&
++                spell->Effect[i] != SPELL_EFFECT_DISPEL &&
++                !spell->IsEffectHandledOnDelayedSpellLaunch(SpellEffectIndex(i)))
++                return false;
++        return true;
++    }
++
++    static void Relay(Player const* sender, WorldPacket const& packet)
++    {
++        ObjectGuidSet observers;
++        if (sender->m_broadcaster)
++            observers = sender->m_broadcaster->GetListenerGuids();
++        else
++            for (auto const& ref : sender->GetMap()->GetPlayers())
++                observers.insert(ref.getSource()->GetObjectGuid());
++        for (auto const& guid : observers)
++        {
++            Player* observer = sender->GetMap()->GetPlayer(guid);
++            if (observer && observer != sender && observer->tarnished.capable &&
++                observer->IsInVisibleList(sender))
++                observer->GetSession()->SendPacket(&packet);
++        }
++    }
++
++    static WorldPacket PosePacket(Player const* sender)
++    {
++        WorldPacket packet(SMSG_TARNISHED, 13 + sender->tarnished.pose.size());
++        packet << uint8(0x11) << uint64(sender->GetGUID()) << sender->tarnished.poseReceipt;
++        packet.append(sender->tarnished.pose);
++        return packet;
++    }
++
++    void QueueCreate(Player const* sender, Player* observer, UpdateData& data)
++    {
++        if (sender != observer && observer->tarnished.capable && Active(sender))
++            data.AddSkateVisual(PosePacket(sender));
++    }
++
++    static void StopPose(Player* player)
++    {
++        auto& state = player->tarnished;
++        if (state.active && player->IsInWorld())
++        {
++            state.pose.resize(47);
++            state.pose[14] = 0;
++            state.pose[15] = 0;
++            state.pose[46] = 0;
++            ++state.poseSequence;
++            for (unsigned i = 0; i < 4; ++i)
++                state.pose[6 + i] = uint8(state.poseSequence >> (i * 8));
++            state.poseReceipt = WorldTimer::getMSTime();
++            Relay(player, PosePacket(player));
++        }
++        state.active = false;
++        state.blockedBout = state.hasPose;
++        state.retiredBout = state.bout;
++        state.pose.clear();
++    }
++
++    static void Resolve(Player* player, Pending pending, Answer const* answer)
++    {
++        // No raw source pointer survives the delay; map removal can delete creatures.
++        Unit* source = player->IsInWorld() ? player->GetMap()->GetUnit(pending.source) : nullptr;
++        // Always release continuations (including spell lifetime holds) even if the source is gone.
++        pending.finish(Allowed(source, player, pending.melee) ? source : nullptr, player, answer);
++    }
++
++    void Clear(Player* player, bool login)
++    {
++        auto& state = player->tarnished;
++        StopPose(player);
++        auto pending = std::move(state.pending);
++        state.pending.clear();
++        for (auto& hit : pending)
++            Resolve(player, std::move(hit), nullptr);
++        if (login)
++            state = State{};
++        state.entry = WorldTimer::getMSTime();
++    }
++
++    void Update(Player* player)
++    {
++        auto& state = player->tarnished;
++        if (state.active && !Active(player))
++            StopPose(player);
++        uint32 now = WorldTimer::getMSTime();
++        while (!state.pending.empty() &&
++               (!Active(player) || WorldTimer::getMSTimeDiff(state.pending.front().receipt, now) >= TIMEOUT))
++        {
++            Pending pending = std::move(state.pending.front());
++            state.pending.pop_front();
++            Resolve(player, std::move(pending), nullptr);
++        }
++    }
++
++    void ClearSource(Unit* source)
++    {
++        if (!source->IsInWorld())
++            return;
++        for (auto const& ref : source->GetMap()->GetPlayers())
++        {
++            Player* player = ref.getSource();
++            auto& pending = player->tarnished.pending;
++            for (auto it = pending.begin(); it != pending.end();)
++            {
++                if (it->source != source->GetObjectGuid())
++                {
++                    ++it;
++                    continue;
++                }
++                Pending hit = std::move(*it);
++                it = pending.erase(it);
++                // Release spell holds before the caster's event queue is destroyed.
++                hit.finish(nullptr, player, nullptr);
++            }
++        }
++    }
++
++    bool Addon(Player* player, std::string const& message)
++    {
++        if (message.compare(0, 10, "TARNISHED\t") != 0)
++            return false;
++        auto& state = player->tarnished;
++        uint32 now = WorldTimer::getMSTime();
++        if (message != "TARNISHED\tV\t1" ||
++            (state.discovered && WorldTimer::getMSTimeDiff(state.capsReceipt, now) < 1000))
++            return true;
++        state.discovered = true;
++        state.capsReceipt = now;
++        WorldPacket response;
++        ChatHandler::BuildChatPacket(response, CHAT_MSG_PARTY, "TARNISHED\tCAPS\t1", LANG_ADDON,
++                                     CHAT_TAG_NONE, ObjectGuid());
++        player->GetSession()->SendPacket(&response);
++        return true;
++    }
++
++    bool Defer(Unit* source, Player* defender, uint32 amount, uint8 school, bool melee,
++               std::function<void(Unit*, Player*, Answer const*)> finish)
++    {
++        if (!Active(defender) || !Allowed(source, defender, melee) ||
++            defender->tarnished.pending.size() >= 64)
++            return false;
++        // A seeded bijection of a process-wide counter: never reuse a token, even after reconnect.
++        static uint32 const seed = std::random_device{}();
++        static std::atomic<uint64> serial{1};
++        uint64 number = serial.fetch_add(1);
++        if (number > std::numeric_limits<uint32>::max())
++            return false;
++        uint32 token = uint32(number) ^ seed;
++        Pending pending;
++        pending.token = token;
++        pending.receipt = WorldTimer::getMSTime();
++        pending.source = source->GetObjectGuid();
++        pending.amount = amount;
++        pending.melee = melee;
++        pending.finish = std::move(finish);
++        defender->tarnished.pending.push_back(std::move(pending));
++        WorldPacket packet(SMSG_TARNISHED, 19);
++        packet << uint8(0x13) << token << uint64(source->GetGUID()) << school << amount << uint8(melee);
++        defender->GetSession()->SendPacket(&packet);
++        return true;
++    }
++
++    static bool Float(ByteBuffer& data, float& value, float bound)
++    {
++        if (data.size() - data.rpos() < 4)
++            return false;
++        data >> value;
++        return std::isfinite(value) && std::abs(value) <= bound;
++    }
++
++    static bool Transform(ByteBuffer& data, bool scale, float bound)
++    {
++        float value, norm = 0.f;
++        for (unsigned i = 0; i < 3; ++i)
++            if (!Float(data, value, bound))
++                return false;
++        for (unsigned i = 0; i < 4; ++i)
++        {
++            if (!Float(data, value, 1.1f))
++                return false;
++            norm += value * value;
++        }
++        if (norm < .9f || norm > 1.1f)
++            return false;
++        if (scale)
++            for (unsigned i = 0; i < 3; ++i)
++                if (!Float(data, value, 100.f) || value < .001f)
++                    return false;
++        return true;
++    }
++
++    static bool Pose(ByteBuffer data, uint32& bout, uint32& sequence, bool& active)
++    {
++        if (data.size() < 47)
++            return false;
++        data.rpos(2);
++        uint32 sample;
++        uint8 on, guard, joints;
++        uint16 action;
++        data >> bout >> sequence >> sample >> on >> guard >> action;
++        if (on > 1 || guard > 1 || !Transform(data, false, 1000000.f))
++            return false;
++        active = on != 0;
++        data >> joints;
++        if (joints > 96 || (!active && joints))
++            return false;
++        std::unordered_set<std::string> names;
++        for (unsigned i = 0; i < joints; ++i)
++        {
++            if (data.rpos() == data.size())
++                return false;
++            uint8 length;
++            data >> length;
++            if (!length || length > 48 || data.size() - data.rpos() < length)
++                return false;
++            std::string name;
++            for (unsigned j = 0; j < length; ++j)
++            {
++                uint8 ch;
++                data >> ch;
++                if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
++                      (ch >= '0' && ch <= '9') || ch == '_'))
++                    return false;
++                name += char(ch);
++            }
++            if (!names.insert(name).second || !Transform(data, true, 10000.f))
++                return false;
++        }
++        return data.rpos() == data.size();
++    }
++
++    static bool Budget(State& state, uint32 now, bool pose, bool off)
++    {
++        now = WorldTimer::getMSTime(); // mailbox and command receipt times need not be ordered
++        uint32 elapsed = WorldTimer::getMSTimeDiff(state.budgetTime, now);
++        state.poseTokens = std::min(3.f, state.poseTokens + elapsed * .03f);
++        state.commandTokens = std::min(64.f, state.commandTokens + elapsed * .064f);
++        state.budgetTime = now;
++        float& tokens = pose ? state.poseTokens : state.commandTokens;
++        if (tokens < (pose && !off ? 2.f : 1.f))
++            return false;
++        tokens -= 1.f;
++        return true;
++    }
++
++    static void Attack(Player* player, ByteBuffer data, uint32 received)
++    {
++        if (!Active(player) || data.size() < 30)
++            return;
++        data.rpos(2);
++        uint32 sequence, id, sample;
++        uint8 weapon, kind, count;
++        data >> sequence >> id >> sample >> weapon >> kind >> count;
++        // The approved slice is one-handed sword plus shield, not arbitrary movesets.
++        if ((weapon != 1 && weapon != 24) || kind > 19 || !count || count > 16 ||
++            data.size() != 17 + size_t(count) * 13)
++            return;
++        struct Contact { Unit* target; uint32 damage; uint8 flags; };
++        std::vector<Contact> contacts;
++        std::unordered_set<uint64> seen;
++        for (unsigned i = 0; i < count; ++i)
++        {
++            uint64 guid;
++            uint32 damage;
++            uint8 flags;
++            data >> guid >> damage >> flags;
++            Unit* target = player->GetMap()->GetUnit(ObjectGuid(guid));
++            if (!guid || flags > 3 || damage > 1000000 || !seen.insert(guid).second ||
++                !Allowed(player, target, true))
++                return;
++            contacts.push_back({target, damage, flags});
++        }
++        auto& state = player->tarnished;
++        if ((state.hasCommand && !Newer(sequence, state.commandSequence)) ||
++            (state.hasAttack && !Newer(id, state.attackId)) ||
++            !Budget(state, received, false, false))
++            return;
++        state.hasCommand = state.hasAttack = true;
++        state.commandSequence = sequence;
++        state.attackId = id;
++        WorldPacket relay(SMSG_TARNISHED, 13 + data.size());
++        relay << uint8(0x12) << uint64(player->GetGUID()) << received;
++        relay.append(data.contents(), data.size());
++        Relay(player, relay);
++        for (auto const& contact : contacts)
++        {
++            CalcDamageInfo hit;
++            // Offence supplies pre-armour damage; native bonus/crit/glance rolls must not repeat it.
++            player->CalculateTarnishedMelee(contact.target, contact.damage, contact.flags, &hit);
++            auto finish = [hit](Unit* source, Player* defender, Answer const* answer) mutable
++            {
++                if (!source)
++                    return;
++                hit.attacker = source;
++                hit.target = defender;
++                source->FinishTarnishedMelee(&hit, answer, false);
++            };
++            if (!Defer(player, contact.target->ToPlayer(), hit.totalDamage, 0, true, finish))
++                player->FinishTarnishedMelee(&hit, nullptr, false);
++        }
++    }
++
++    static void Defence(Player* player, ByteBuffer data, uint32 received)
++    {
++        if (data.size() < 19)
++            return;
++        data.rpos(2);
++        uint32 sequence, token;
++        uint64 guid;
++        uint8 outcome;
++        data >> sequence >> token >> guid >> outcome;
++        Answer answer;
++        answer.outcome = outcome;
++        if (outcome <= 2)
++        {
++            if (data.size() != 19)
++                return;
++        }
++        else if (outcome == 3)
++        {
++            if (data.size() != 30)
++                return;
++            uint16 stamina;
++            uint8 broken;
++            data >> answer.absorbed >> stamina >> broken >> answer.taken;
++            if (broken > 1)
++                return;
++        }
++        else if (outcome == 4)
++        {
++            if (data.size() != 23)
++                return;
++            data >> answer.taken;
++        }
++        else
++            return;
++        auto& state = player->tarnished;
++        if (!Active(player) || (state.hasCommand && !Newer(sequence, state.commandSequence)))
++            return;
++        auto it = std::find_if(state.pending.begin(), state.pending.end(),
++            [token](Pending const& hit) { return hit.token == token; });
++        if (it == state.pending.end() || uint64(it->source) != guid ||
++            WorldTimer::getMSTimeDiff(it->receipt, received) >= TIMEOUT ||
++            WorldTimer::getMSTimeDiff(it->receipt, WorldTimer::getMSTime()) >= TIMEOUT ||
++            ((outcome == 1 || outcome == 2) && !it->melee) ||
++            (outcome == 3 && uint64(answer.absorbed) + answer.taken != it->amount) ||
++            (outcome == 4 && answer.taken != it->amount) ||
++            !Budget(state, received, false, false))
++            return;
++        state.hasCommand = true;
++        state.commandSequence = sequence;
++        Pending pending = std::move(*it);
++        state.pending.erase(it); // erase before procs can re-enter combat
++        Resolve(player, std::move(pending), &answer);
++    }
++
++    void Handle(Player* player, ByteBuffer data, uint32 received)
++    {
++        if (!player || !player->IsInWorld() || player->IsBeingTeleported() ||
++            data.size() < 2 || data.size() > 8179 || data.read<uint8>(0) != 1)
++            return;
++        auto& state = player->tarnished;
++        uint32 now = WorldTimer::getMSTime();
++        if ((WorldTimer::getMSTimeDiff(state.entry, now) < 5000 && !Newer(received, state.entry)) ||
++            WorldTimer::getMSTimeDiff(received, now) > 2000)
++            return;
++        uint8 kind = data.read<uint8>(1);
++        if (kind == 0)
++        {
++            if (data.size() != 2 || !state.discovered || !Budget(state, received, false, false))
++                return;
++            state.capable = true;
++            WorldPacket ack(SMSG_TARNISHED, 2);
++            ack << uint8(1) << uint8(0);
++            player->GetSession()->SendPacket(&ack);
++            for (auto const& ref : player->GetMap()->GetPlayers())
++            {
++                Player* sender = ref.getSource();
++                if (sender != player && Active(sender) && player->IsInVisibleList(sender))
++                {
++                    WorldPacket packet = PosePacket(sender);
++                    player->GetSession()->SendPacket(&packet);
++                }
++            }
++            return;
++        }
++        if (!state.capable)
++            return;
++        if (kind == 2)
++            Attack(player, data, received);
++        else if (kind == 3)
++            Defence(player, data, received);
++        else if (kind == 4)
++        {
++            uint32 bout, sequence;
++            bool active;
++            if (!Pose(data, bout, sequence, active) || (active && !Equipped(player)) ||
++                (state.blockedBout && !Newer(bout, state.retiredBout)) ||
++                (state.hasPose && (bout == state.bout ? !Newer(sequence, state.poseSequence) :
++                                                     !Newer(bout, state.bout))) ||
++                !Budget(state, received, true, state.active && !active))
++                return;
++            // coords::wow_to_bevy is (-y, z, -x); poses never relocate authoritative players.
++            float y = -data.read<float>(18), z = data.read<float>(22), x = -data.read<float>(26);
++            float dx = x - player->GetPositionX(), dy = y - player->GetPositionY(), dz = z - player->GetPositionZ();
++            if (dx * dx + dy * dy + dz * dz > 64.f)
++                return;
++            state.bout = bout;
++            state.poseSequence = sequence;
++            state.hasPose = true;
++            state.blockedBout = !active;
++            state.retiredBout = bout;
++            state.active = active;
++            state.poseReceipt = received;
++            state.pose.assign(data.contents(), data.contents() + data.size());
++            Relay(player, PosePacket(player));
++            if (!active)
++                Update(player);
++        }
++    }
++}
++
++void WorldSession::HandleTarnished(TarnishedPacket const& packet)
++{
++    Tarnished::Handle(GetPlayer(), packet.payload, packet.received);
++}
+diff --git a/src/game/Tarnished.h b/src/game/Tarnished.h
+new file mode 100644
+--- /dev/null
++++ b/src/game/Tarnished.h
+@@ -0,0 +1,86 @@
++// SPDX-License-Identifier: MIT OR Apache-2.0
++#ifndef TARNISHED_H
++#define TARNISHED_H
++#include "Common.h"
++#include "Packet.h"
++#include "ObjectGuid.h"
++#include <deque>
++#include <functional>
++#include <vector>
++
++class Player;
++class Unit;
++class UpdateData;
++class SpellEntry;
++
++class TarnishedPacket final : public ClientPacket
++{
++public:
++    TarnishedPacket() : ClientPacket(OPCODE_WILL_BE_SET_IN_READ_FUNCTION) {}
++    ByteBuffer payload;
++    uint32 received = 0;
++    void ReadFromWorldPacket(WorldPacket& packet) override
++    {
++        opcode = packet.GetOpcode();
++        received = packet.GetPacketTime();
++        if (packet.size() >= 2 && packet.size() <= 8179)
++            payload.append(packet.contents(), packet.size());
++        packet.rpos(packet.size());
++    }
++};
++
++namespace Tarnished
++{
++    constexpr uint32 TIMEOUT = 350;
++    // A null answer resumes precisely the stock continuation.
++    struct Answer
++    {
++        uint8 outcome = 4;
++        uint32 taken = 0;
++        uint32 absorbed = 0;
++    };
++    struct Pending
++    {
++        uint32 token = 0;
++        uint32 receipt = 0;
++        ObjectGuid source;
++        uint32 amount = 0;
++        bool melee = false;
++        std::function<void(Unit*, Player*, Answer const*)> finish;
++    };
++    // All state belongs to the player's map thread, never the socket/chat thread.
++    struct State
++    {
++        bool discovered = false;
++        bool capable = false;
++        bool active = false;
++        bool hasPose = false;
++        bool blockedBout = false;
++        uint32 retiredBout = 0;
++        uint32 entry = 0;
++        uint32 capsReceipt = 0;
++        uint32 poseReceipt = 0;
++        uint32 bout = 0;
++        uint32 poseSequence = 0;
++        uint32 commandSequence = 0;
++        uint32 attackId = 0;
++        bool hasCommand = false;
++        bool hasAttack = false;
++        uint32 budgetTime = 0;
++        float poseTokens = 3.f;
++        float commandTokens = 64.f;
++        std::vector<uint8> pose;
++        std::deque<Pending> pending;
++    };
++    bool Addon(Player*, std::string const&);
++    void Handle(Player*, ByteBuffer, uint32);
++    bool Active(Unit const*);
++    bool SpellSupported(SpellEntry const*);
++    bool Defer(Unit*, Player*, uint32, uint8, bool,
++               std::function<void(Unit*, Player*, Answer const*)>);
++    void Update(Player*);
++    void Clear(Player*, bool login = false);
++    void ClearSource(Unit*);
++    void QueueCreate(Player const*, Player*, UpdateData&);
++}
++#endif
+diff --git a/src/shared/Progression.h b/src/shared/Progression.h
+--- a/src/shared/Progression.h
++++ b/src/shared/Progression.h
+@@ -33,7 +33,7 @@
+ // Change this to define which build of the game to emulate.
+ // Has an effect on things such as core gameplay mechanics,
+ // loading of client data, and network packets structure.
+-#define SUPPORTED_CLIENT_BUILD 5875
++#define SUPPORTED_CLIENT_BUILD CLIENT_BUILD_1_12_1
+ 
+ // This defines which client builds the world server will accept.
+ #if SUPPORTED_CLIENT_BUILD >= CLIENT_BUILD_1_12_1
