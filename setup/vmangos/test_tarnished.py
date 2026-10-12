@@ -4,6 +4,8 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import json
+import shlex
 import shutil
 import subprocess
 import unittest
@@ -144,7 +146,7 @@ static Answer last;
 static bool Active(Player* p) { return p->active; }
 static void Resolve(Player*, Pending, Answer const* a) { ++resolved; last = *a; }
 """
-        for name in ("Newer", "Float", "Transform", "Pose", "Budget", "Defence"):
+        for name in ("Newer", "Float", "Transform", "Pose", "PoseOrder", "Budget", "Defence"):
             code += definition(cpp, f"static {'void' if name == 'Defence' else 'bool'} {name}") + "\n"
         code += r"""
 }
@@ -181,6 +183,18 @@ static Player defender(bool melee = true) {
     p.tarnished.pending.push_back(pending); return p;
 }
 int main() {
+    Tarnished::State state;
+    assert(!Tarnished::PoseOrder(state, 4, 1, 1, true));
+    assert(Tarnished::PoseOrder(state, 1, 1, 1, true));
+    state.hasPose = state.active = true; state.bout = 1; state.poseSequence = 1;
+    assert(Tarnished::PoseOrder(state, 4, 1, 2, true));
+    assert(!Tarnished::PoseOrder(state, 4, 1, 2, false));
+    assert(!Tarnished::PoseOrder(state, 4, 2, 2, true));
+    assert(Tarnished::PoseOrder(state, 1, 1, 2, false));
+    state.active = false; state.blockedBout = true; state.retiredBout = 1;
+    assert(!Tarnished::PoseOrder(state, 4, 1, 3, true));
+    assert(!Tarnished::PoseOrder(state, 1, 1, 3, true));
+    assert(Tarnished::PoseOrder(state, 1, 2, 3, true));
     assert(valid(pose(false))); assert(valid(pose(true)));
     auto b = pose(true, 1); joint(b, "ROOT"); assert(valid(b));
     auto trailing = b; trailing.put<uint8>(0); assert(!valid(trailing));
@@ -496,6 +510,29 @@ int main() {
         prepared.write_bytes(prepare(PATCH.read_bytes()))
         subprocess.run(["git", "apply", "--check", f"--directory={directory}", str(prepared)],
                        cwd=ROOT, check=True)
+
+    def test_modified_cpp_translation_units_compile(self):
+        build = os.environ.get("TARNISHED_VMANGOS_BUILD")
+        if not build:
+            self.skipTest("set TARNISHED_VMANGOS_BUILD to a configured, patched pinned-source build")
+        directory = ROOT / Path(build).resolve().relative_to(ROOT)
+        entries = json.loads((directory / "compile_commands.json").read_text())
+        names = {"Tarnished.cpp", "Unit.cpp", "Spell.cpp", "SpellCaster.cpp", "WorldSession.cpp",
+                 "Opcodes.cpp", "Player.cpp", "CharacterHandler.cpp", "ChatHandler.cpp", "Object.cpp"}
+        checked = set()
+        for entry in entries:
+            source = Path(entry["file"])
+            if source.name not in names or "/src/game/" not in str(source):
+                continue
+            source.resolve().relative_to(ROOT)
+            args = shlex.split(entry["command"])
+            output = args.index("-o")
+            del args[output:output + 2]
+            args.remove("-c")
+            args.insert(1, "-fsyntax-only")
+            subprocess.run(args, cwd=entry["directory"], check=True)
+            checked.add(source.name)
+        self.assertEqual(checked, names)
 
     def test_patch_hunk_lengths(self):
         unit = prepare(PATCH.read_bytes()).split(

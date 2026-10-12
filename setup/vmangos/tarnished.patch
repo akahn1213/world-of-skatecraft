@@ -502,7 +502,7 @@ diff --git a/src/game/Server/WorldSession.cpp b/src/game/Server/WorldSession.cpp
      m_recvQueue[processingStrategy].add(std::move(packet));
  }
  
-@@ -642,6 +660,31 @@
+@@ -642,6 +660,26 @@
              ProcessAnticheatAction("Anticrash", "Exception raised", CHEAT_ACTION_KICK);
          }
      }
@@ -521,11 +521,6 @@ diff --git a/src/game/Server/WorldSession.cpp b/src/game/Server/WorldSession.cpp
 +            if (!_player || !_player->IsInWorld())
 +                break;
 +            auto const* frame = static_cast<TarnishedPacket const*>(command.get());
-+            if (pose && _player->tarnished.capable)
-+            {
-+                HandleTarnished(*static_cast<TarnishedPacket const*>(pose.get()));
-+                pose.reset();
-+            }
 +            HandleTarnished(*frame);
 +        }
 +        if (pose && _player && _player->IsInWorld())
@@ -741,9 +736,9 @@ diff --git a/src/game/Tarnished.cpp b/src/game/Tarnished.cpp
 new file mode 100644
 --- /dev/null
 +++ b/src/game/Tarnished.cpp
-@@ -0,0 +1,527 @@
+@@ -0,0 +1,536 @@
 +// SPDX-License-Identifier: MIT OR Apache-2.0
-+// v2 capability, v1 envelopes with optional reference-stamina tails; see protocol/tarnished.rs.
++// v3 capability: ordered stance/combat, coalesced visual poses; see protocol/tarnished.rs.
 +#include "Tarnished.h"
 +#include "Chat.h"
 +#include "Player.h"
@@ -777,6 +772,7 @@ new file mode 100644
 +            shield->GetProto()->SubClass == ITEM_SUBCLASS_ARMOR_SHIELD &&
 +            player->IsAlive() && !player->IsMounted() && !player->IsNoWeaponShapeShift() &&
 +            !player->skateVisual.active && !player->IsInWater() &&
++            !player->HasAura(Skatecraft::SPELL_SUMMON_SKATEBOARD) &&
 +            !player->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_STUNNED | UNIT_FLAG_CONFUSED |
 +                UNIT_FLAG_FLEEING | UNIT_FLAG_TAXI_FLIGHT | UNIT_FLAG_REMOVE_CLIENT_CONTROL);
 +    }
@@ -930,13 +926,13 @@ new file mode 100644
 +            return false;
 +        auto& state = player->tarnished;
 +        uint32 now = WorldTimer::getMSTime();
-+        if (message != "TARNISHED\tV\t2" ||
++        if (message != "TARNISHED\tV\t3" ||
 +            (state.discovered && WorldTimer::getMSTimeDiff(state.capsReceipt, now) < 1000))
 +            return true;
 +        state.discovered = true;
 +        state.capsReceipt = now;
 +        WorldPacket response;
-+        ChatHandler::BuildChatPacket(response, CHAT_MSG_PARTY, "TARNISHED\tCAPS\t2", LANG_ADDON,
++        ChatHandler::BuildChatPacket(response, CHAT_MSG_PARTY, "TARNISHED\tCAPS\t3", LANG_ADDON,
 +                                     CHAT_TAG_NONE, ObjectGuid());
 +        player->GetSession()->SendPacket(&response);
 +        return true;
@@ -1052,6 +1048,15 @@ new file mode 100644
 +            return false;
 +        tokens -= 1.f;
 +        return true;
++    }
++
++    static bool PoseOrder(State const& state, uint8 kind, uint32 bout, uint32 sequence, bool active)
++    {
++        if (kind == 4 && (!state.hasPose || bout != state.bout || active != state.active))
++            return false;
++        return !(state.blockedBout && !Newer(bout, state.retiredBout)) &&
++            (!state.hasPose || (bout == state.bout ? Newer(sequence, state.poseSequence) :
++                                                  Newer(bout, state.bout)));
 +    }
 +
 +    static bool ContactBatch(State const& state, uint32 id, uint8 weapon, uint8 kind,
@@ -1233,15 +1238,13 @@ new file mode 100644
 +            Attack(player, data, received);
 +        else if (kind == 3)
 +            Defence(player, data, received);
-+        else if (kind == 4)
++        else if (kind == 1 || kind == 4)
 +        {
 +            uint32 bout, sequence;
 +            bool active;
 +            if (!Pose(data, bout, sequence, active) || (active && !Equipped(player)) ||
-+                (state.blockedBout && !Newer(bout, state.retiredBout)) ||
-+                (state.hasPose && (bout == state.bout ? !Newer(sequence, state.poseSequence) :
-+                                                     !Newer(bout, state.bout))) ||
-+                !Budget(state, received, true, state.active && !active))
++                !PoseOrder(state, kind, bout, sequence, active) ||
++                !Budget(state, received, kind == 4, state.active && !active))
 +                return;
 +            // coords::wow_to_bevy is (-y, z, -x); poses never relocate authoritative players.
 +            float y = -data.read<float>(18), z = data.read<float>(22), x = -data.read<float>(26);
@@ -1256,6 +1259,7 @@ new file mode 100644
 +            state.active = active;
 +            state.poseReceipt = received;
 +            state.pose.assign(data.contents(), data.contents() + data.size());
++            state.pose[1] = 4; // relays keep the visual envelope, including the self approval
 +            WorldPacket approved = PosePacket(player);
 +            player->GetSession()->SendPacket(&approved); // self echo grants/retires the stance
 +            Relay(player, approved);

@@ -29,7 +29,7 @@ pub const HELLO: [u8; 2] = [1, 0];
 /// The capability version this build speaks. The discovery handshake is independent of skating's:
 /// a server that relays skating need not relay Tarnished combat, and an older peer that knows
 /// neither is undisturbed.
-pub const VERSION: u8 = 2;
+pub const VERSION: u8 = 3;
 
 fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid tarnished payload")
@@ -461,6 +461,8 @@ fn bool_(r: &mut &[u8]) -> io::Result<bool> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Packet {
     Hello,
+    /// Ordered stance request/retirement; visual poses cannot change gameplay ownership.
+    Stance(Pose),
     Attack(AttackVerdict),
     Defence(DefenceVerdict),
     Pose(Pose),
@@ -469,6 +471,7 @@ pub enum Packet {
 mod kind {
     /// Second byte of the two-byte frame tag; the first is always 1 (so `[1, 0]` stays HELLO).
     pub const ATTACK: u8 = 2;
+    pub const STANCE: u8 = 1;
     pub const DEFENCE: u8 = 3;
     pub const POSE: u8 = 4;
 }
@@ -478,6 +481,10 @@ impl Packet {
         let mut out = Vec::new();
         match self {
             Packet::Hello => out.extend(HELLO),
+            Packet::Stance(p) => {
+                out.extend([1, kind::STANCE]);
+                p.encode_into(&mut out)?;
+            }
             Packet::Attack(v) => {
                 out.extend([1, kind::ATTACK]);
                 v.encode_into(&mut out)?;
@@ -511,6 +518,7 @@ pub fn decode(body: &[u8]) -> io::Result<Packet> {
         return Err(invalid());
     }
     let packet = match tag[1] {
+        kind::STANCE => Packet::Stance(Pose::decode_from(&mut r)?),
         kind::ATTACK => Packet::Attack(AttackVerdict::decode_from(&mut r)?),
         kind::DEFENCE => Packet::Defence(DefenceVerdict::decode_from(&mut r)?),
         kind::POSE => Packet::Pose(Pose::decode_from(&mut r)?),
@@ -644,7 +652,7 @@ pub fn encode_relay(guid: u64, receipt_ms: u32, inner: &[u8]) -> io::Result<Vec<
     let tag = match decode(inner)? {
         Packet::Pose(_) => relay_tag::POSE,
         Packet::Attack(_) => relay_tag::ATTACK,
-        Packet::Hello | Packet::Defence(_) => return Err(invalid()),
+        Packet::Hello | Packet::Defence(_) | Packet::Stance(_) => return Err(invalid()),
     };
     let mut out = vec![tag];
     out.extend(guid.to_le_bytes());
@@ -699,6 +707,18 @@ mod tests {
                 rotation: [0.0, 0.0, 0.0, 1.0],
                 scale: [1.0; 3],
             }],
+        }
+    }
+
+    #[test]
+    fn stance_is_ordered_and_not_a_visual_relay() {
+        let packet = Packet::Stance(pose());
+        let wire = packet.encode().unwrap();
+        assert_eq!(&wire[..2], &[1, kind::STANCE]);
+        assert_eq!(decode(&wire).unwrap(), packet);
+        assert!(encode_relay(3, 10, &wire).is_err());
+        for end in 0..wire.len() {
+            assert!(decode(&wire[..end]).is_err());
         }
     }
 

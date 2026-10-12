@@ -501,7 +501,7 @@ fn update(
     mut score: ResMut<score::SkateScore>,
     tarnished: Res<crate::tarnished::Drive>,
 ) {
-    if tarnished.active {
+    if tarnished.active || tarnished.pending {
         if drive.active || host.activating {
             stop(&mut host, &mut drive, &mut pose);
         }

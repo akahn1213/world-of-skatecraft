@@ -20,6 +20,7 @@ use crate::net::{ClientCommand, Guid, GuidIndex, NetCommands, ObjectStore, SelfG
 #[derive(Resource, Default)]
 pub(crate) struct Drive {
     pub(crate) active: bool,
+    pub(crate) pending: bool,
     pub(crate) position: Vec3,
     pub(crate) yaw: f32,
     pub(crate) speed: f32,
@@ -85,6 +86,7 @@ fn send(packet: Packet, commands: &NetCommands) {
 fn stop(host: &mut Host, drive: &mut Drive, link: &mut replication::Link, net: &NetCommands) {
     if drive.active || link.requested {
         drive.active = false;
+        drive.pending = false;
         link.requested = false;
         drive.lock = None;
         host.backend = None;
@@ -192,6 +194,7 @@ fn tick(
             host.combat.begin_bout();
             host.grounded = player.move_flags() & crate::creature_anim::move_flags::FALLING == 0;
             link.begin(time.elapsed_secs_f64());
+            drive.pending = true;
             // The self pose echoed by the server grants the stance before either controller changes.
             drive.active = host.backend.is_some();
             link.publish(drive, time.elapsed_secs_f64(), &net, true);

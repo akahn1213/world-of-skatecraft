@@ -30,7 +30,8 @@ fully offline against a local server.
 `177a3b5ec14a9bde39b9ab458a3400b4038224e3`. Build the launcher with `--features er-data`
 and use the patched vmangos server. F8 (pad Start) opts a living, unmounted warrior with a
 one-handed sword and shield into the stance; skating and ordinary movement cannot own the pad
-at the same time. RB attacks, RT charges a heavy attack, LB holds guard, and tapping B rolls
+at the same time. Control changes only after the server approves the ordered stance request;
+visual pose updates cannot enable combat. RB attacks, RT charges a heavy attack, LB holds guard, and tapping B rolls
 while holding B sprints. Keyboard equivalents are U, I, O and Space. F9 (R3) locks the selected
 attackable target; removal, death, range or occlusion clears the lock.
 

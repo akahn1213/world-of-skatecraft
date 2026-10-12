@@ -52,7 +52,7 @@ impl Link {
         } else {
             let _ = net.0.send(ClientCommand::AddonMessage {
                 distribution: benilla_ui::script::AddonDistribution::Party,
-                text: "TARNISHED\tV\t2".into(),
+                text: format!("TARNISHED\tV\t{}", benilla_protocol::tarnished::VERSION),
             });
         }
         self.attempts += 1;
@@ -85,14 +85,19 @@ impl Link {
     pub(super) fn publish_off(&mut self, drive: &Drive, net: &NetCommands) {
         self.mailbox.lock_recover().payload = None;
         let pose = self.pose(drive, self.last_send.max(0.0));
-        super::send(Packet::Pose(pose), net);
+        super::send(Packet::Stance(pose), net);
     }
 
     pub(super) fn publish(&mut self, drive: &Drive, now: f64, net: &NetCommands, ordered: bool) {
         if !self.acknowledged || now - self.last_send < 0.05 {
             return;
         }
-        let packet = Packet::Pose(self.pose(drive, now));
+        let pose = self.pose(drive, now);
+        let packet = if ordered {
+            Packet::Stance(pose)
+        } else {
+            Packet::Pose(pose)
+        };
         self.last_send = now;
         if ordered {
             super::send(packet, net);
@@ -154,7 +159,7 @@ fn capabilities(In(event): In<SessionEvent>, mut link: ResMut<Link>) {
         if link.entered
             && message.language == benilla_protocol::messages::LANGUAGE_ADDON
             && message.sender_guid == 0
-            && message.text == "TARNISHED\tCAPS\t2"
+            && message.text == format!("TARNISHED\tCAPS\t{}", benilla_protocol::tarnished::VERSION)
         {
             link.supported = true;
             link.attempts = 0;
@@ -240,6 +245,7 @@ fn packet(
         {
             if pose.active && link.requested {
                 link.requested = false;
+                drive.pending = false;
                 drive.active = true;
                 let _ = net.0.send(ClientCommand::TarnishedMode(true));
                 info!("tarnished: server approved sword/shield stance");
@@ -354,7 +360,7 @@ mod tests {
         });
         world.resource_mut::<Link>().discover(0.0, &net);
         assert!(matches!(rx.try_recv().unwrap(),
-            ClientCommand::AddonMessage { text, .. } if text == "TARNISHED\tV\t2"));
+            ClientCommand::AddonMessage { text, .. } if text == "TARNISHED\tV\t3"));
         let mut message = benilla_protocol::messages::ChatMessage {
             chat_type: benilla_protocol::messages::CHAT_MSG_PARTY,
             language: benilla_protocol::messages::LANGUAGE_ADDON,
@@ -362,7 +368,7 @@ mod tests {
             target_guid: 0,
             sender_name: None,
             channel: None,
-            text: "TARNISHED\tCAPS\t2".into(),
+            text: "TARNISHED\tCAPS\t3".into(),
             chat_tag: 0,
         };
         world
