@@ -519,6 +519,7 @@ dependencies = [
  "assert_no_alloc",
  "avian3d",
  "benilla-assets",
+ "benilla-controller",
  "benilla-formats",
  "benilla-protocol",
  "benilla-srp",
@@ -586,6 +587,10 @@ version = "0.2.0"
 
 [[package]]
 name = "benilla-bytes"
+version = "0.2.0"
+
+[[package]]
+name = "benilla-controller"
 version = "0.2.0"
 
 [[package]]

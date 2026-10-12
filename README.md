@@ -43,8 +43,15 @@ joints are retargeted onto the actual WoW character and gear locally and relayed
 remote characters; active actions no longer use stock animation placeholders. Relayed poses
 include their reference fitting frames, so observing clients need no ER install. The right
 stick or held mouse look drives the upstream camera, with WoW geometry clipping its boom.
-The shared Skate 3 controller transport reads raw buttons; Bevy supplies sticks and RT because
-the pinned transport does not expose its private axes/triggers. Stock incoming stamina is normalized onto
+Tarnished uses the same native XInput (Windows) / evdev (64-bit Linux) transport mechanism as
+Skate 3, not Bevy's disabled gamepad backend. Since the pinned bridge hides raw axes, a minimal
+licensed adapter reuses its platform polling code; Skate 3 keeps its native frame pipeline.
+Buttons, both sticks and RT always come from the first successfully polled controller.
+Movement and camera retain the reference radial deadzones (0.1 and 0.15); positive stick Y
+means forward/up, with camera inversion applied once by the reference camera. RT presses at
+75% and releases at 65%. Disconnects clear held input, and a neutral/disconnected stick leaves
+keyboard movement available. Other platforms retain keyboard/mouse controls.
+Stock incoming stamina is normalized onto
 the reference sword and the pinned dummy's damage/stamina ratio. This is a fork policy, not an
 extracted WoW or ER rule. There has been no supervised live two-client combat verification.
 

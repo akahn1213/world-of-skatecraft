@@ -1,0 +1,9 @@
+[package]
+name = "benilla-controller"
+version.workspace = true
+edition = "2024"
+license = "Apache-2.0"
+description = "Raw Xbox controller adapter using the pinned Skate 3 XInput/evdev transport"
+
+[lints]
+workspace = true

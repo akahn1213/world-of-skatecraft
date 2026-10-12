@@ -1,0 +1,21 @@
+The platform transport is adapted from:
+https://github.com/Kimmo3223/2010-rust-rewrite-mashup
+revision 099b1948e9c08394b20c760ef123da38ef347278
+skate/crates/skate-host/src/input/platform.rs
+skate/crates/skate-host/src/input/platform_linux.rs
+
+IW4L
+Copyright 2026 vladtrc
+IW4L was originally developed by vladtrc.
+https://github.com/vladtrc/iw4L
+Licensed under the Apache License, Version 2.0; see ../../LICENSE-APACHE.
+
+Changes: XboxState is local, the adapter exposes the first successful raw
+packet, unused packet metadata is omitted, and the
+platform tests and formatting follow this workspace. No game data is included.
+
+The pinned skate-host InputFrame has private samples and only public controller()
+and buttons() accessors. This adapter reuses its platform mechanism, not Bevy or
+a reconstructed gamepad backend. Skate 3 retains its native InputFrame pipeline
+because Session::collect cannot accept external samples; Session::tick is a
+single-tick diagnostic API, not its variable-frame collect/advance path.

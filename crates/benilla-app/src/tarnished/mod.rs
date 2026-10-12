@@ -65,8 +65,8 @@ struct Host {
     grounded: bool,
     steep_support: bool,
     input: InputBuffer,
-    transport: Mutex<skate_host::bridge::ControllerTransport>,
-    buttons: u16,
+    transport: Mutex<benilla_controller::ControllerTransport>,
+    controller: benilla_controller::CombatInput,
 }
 
 fn backend() -> Option<Box<dyn Backend>> {
@@ -180,7 +180,6 @@ fn tick(
         Res<ButtonInput<MouseButton>>,
         Res<bevy::input::mouse::AccumulatedMouseMotion>,
     ),
-    pads: Query<&Gamepad>,
     window: Query<&Window, With<PrimaryWindow>>,
     capture: Res<crate::ui_script::UiKeyboardCapture>,
     player: Res<crate::player::Player>,
@@ -226,15 +225,11 @@ fn tick(
                 && s.0.unit_flags() & (crate::player::UNIT_FLAG_STUNNED | 0x0010_0000) == 0
                 && equipped(s, &items, &net)
         });
-    let pad = pads.iter().next();
     let raw = host.transport.lock().unwrap().poll();
-    let native = raw.controller().is_some();
-    let buttons = raw.buttons();
-    let pressed = buttons & !host.buttons;
-    host.buttons = buttons;
-    let toggle = keys.just_pressed(KeyCode::F8)
-        || pressed & 0x0010 != 0
-        || (!native && pad.is_some_and(|p| p.just_pressed(GamepadButton::Start)));
+    let pad = host.controller.sample(raw);
+    let buttons = pad.buttons;
+    let pressed = pad.pressed;
+    let toggle = keys.just_pressed(KeyCode::F8) || pressed & 0x0010 != 0;
     if (drive.active || link.requested)
         && (!allowed
             || !link.acknowledged
@@ -274,9 +269,7 @@ fn tick(
     let Some((self_id, _, self_store, _)) = self_object else {
         return;
     };
-    let lock_pressed = keys.just_pressed(KeyCode::F9)
-        || pressed & 0x0080 != 0
-        || (!native && pad.is_some_and(|p| p.just_pressed(GamepadButton::RightThumb)));
+    let lock_pressed = keys.just_pressed(KeyCode::F9) || pressed & 0x0080 != 0;
     if lock_pressed {
         drive.lock = if drive.lock.is_some() {
             None
@@ -332,14 +325,18 @@ fn tick(
         u8::from(combat_key(positive)) as f32 - u8::from(combat_key(negative)) as f32
     };
     let input = BackendInput {
-        move_x: pad
-            .and_then(|p| p.get(GamepadAxis::LeftStickX))
-            .unwrap_or_else(|| keyboard_axis(KeyCode::KeyD, KeyCode::KeyA)),
-        move_y: pad
-            .and_then(|p| p.get(GamepadAxis::LeftStickY))
-            .unwrap_or_else(|| keyboard_axis(KeyCode::KeyW, KeyCode::KeyS)),
-        look_x: pad.map_or(0.0, |p| p.right_stick().x),
-        look_y: pad.map_or(0.0, |p| p.right_stick().y),
+        move_x: if pad.movement == [0.0; 2] {
+            keyboard_axis(KeyCode::KeyD, KeyCode::KeyA)
+        } else {
+            pad.movement[0]
+        },
+        move_y: if pad.movement == [0.0; 2] {
+            keyboard_axis(KeyCode::KeyW, KeyCode::KeyS)
+        } else {
+            pad.movement[1]
+        },
+        look_x: pad.look[0],
+        look_y: pad.look[1],
         mouse_x: if mouse.pressed(MouseButton::Right) || mouse.pressed(MouseButton::Left) {
             motion.delta.x
         } else {
@@ -350,17 +347,10 @@ fn tick(
         } else {
             0.0
         },
-        light_attack: buttons & 0x0200 != 0
-            || (!native && pad.is_some_and(|p| p.pressed(GamepadButton::RightTrigger)))
-            || combat_key(KeyCode::KeyU),
-        heavy_attack: pad.is_some_and(|p| p.pressed(GamepadButton::RightTrigger2))
-            || combat_key(KeyCode::KeyI),
-        guard: buttons & 0x0100 != 0
-            || (!native && pad.is_some_and(|p| p.pressed(GamepadButton::LeftTrigger)))
-            || combat_key(KeyCode::KeyO),
-        dodge: buttons & 0x2000 != 0
-            || (!native && pad.is_some_and(|p| p.pressed(GamepadButton::East)))
-            || combat_key(KeyCode::Space),
+        light_attack: buttons & 0x0200 != 0 || combat_key(KeyCode::KeyU),
+        heavy_attack: pad.heavy_attack || combat_key(KeyCode::KeyI),
+        guard: buttons & 0x0100 != 0 || combat_key(KeyCode::KeyO),
+        dodge: buttons & 0x2000 != 0 || combat_key(KeyCode::Space),
         camera_yaw: reference_yaw(cam_yaw),
         target: locked.map(|(_, t, _, _)| reference_position(t.translation)),
         dt: TICK as f32,
@@ -376,7 +366,7 @@ fn tick(
         steep_support,
         input,
         transport: _,
-        buttons: _,
+        controller: _,
     } = host;
     let Some(backend) = backend.as_mut() else {
         return;
