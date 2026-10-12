@@ -25,7 +25,7 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     trap 'rm -rf "$CONTEXT"' EXIT
     cp -r "$DEPLOY/docker" "$CONTEXT/"
     cp "$PATCH" "$CONTEXT/docker/patches/zz-skatecraft.patch"
-    cp "$TARNISHED_PATCH" "$CONTEXT/docker/patches/zzz-tarnished.patch"
+    python3 "$ROOT/setup/vmangos/prepare_patch.py" "$TARNISHED_PATCH" "$CONTEXT/docker/patches/zzz-tarnished.patch"
     sed "s/make -j\"\$(nproc)\"/make -j$JOBS/" "$CONTEXT/docker/server/Dockerfile" > "$CONTEXT/Dockerfile.skatecraft"
     docker build -t "$IMAGE" -f "$CONTEXT/Dockerfile.skatecraft" \
         --build-arg VMANGOS_REVISION="$VMANGOS_REV" \

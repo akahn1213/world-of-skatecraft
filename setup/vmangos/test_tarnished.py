@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import unittest
 
+from prepare_patch import prepare
+
 ROOT = Path(__file__).resolve().parents[2]
 PATCH = ROOT / "setup/vmangos/tarnished.patch"
 
@@ -99,6 +101,7 @@ int main() {
 #include <cstring>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -235,6 +238,8 @@ int main() {
         (root / "deploy/docker/server").mkdir(parents=True)
         (root / "deploy/docker/patches").mkdir()
         shutil.copyfile(ROOT / "setup/build-server.sh", root / "setup/build-server.sh")
+        shutil.copyfile(ROOT / "setup/vmangos/prepare_patch.py",
+                        root / "setup/vmangos/prepare_patch.py")
         patches = root / "setup/vmangos"
         (patches / "skatecraft.patch").write_text("skate\n")
         (patches / "tarnished.patch").write_text("tarnished\n")
@@ -487,11 +492,13 @@ int main() {
         if not source:
             self.skipTest("set TARNISHED_VMANGOS_SOURCE to the pinned, Skatecraft-patched source")
         directory = Path(source).resolve().relative_to(ROOT)
-        subprocess.run(["git", "apply", "--check", f"--directory={directory}", str(PATCH)],
+        prepared = self.scratch / "tarnished.patch"
+        prepared.write_bytes(prepare(PATCH.read_bytes()))
+        subprocess.run(["git", "apply", "--check", f"--directory={directory}", str(prepared)],
                        cwd=ROOT, check=True)
 
     def test_patch_hunk_lengths(self):
-        unit = PATCH.read_bytes().split(
+        unit = prepare(PATCH.read_bytes()).split(
             b"diff --git a/src/game/Objects/Unit.cpp b/src/game/Objects/Unit.cpp\n", 1
         )[1].split(b"diff --git ", 1)[0]
         in_hunk = False
@@ -500,6 +507,7 @@ int main() {
                 in_hunk = True
             elif in_hunk and line[:1] in (b" ", b"+", b"-"):
                 self.assertTrue(line.endswith(b"\r\n"), "pinned Unit.cpp has CRLF context")
+        self.assertEqual(prepare(prepare(PATCH.read_bytes())), prepare(PATCH.read_bytes()))
         lines = PATCH.read_text().splitlines()
         for index, line in enumerate(lines):
             if not line.startswith("@@"):

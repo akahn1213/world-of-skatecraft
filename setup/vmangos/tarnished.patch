@@ -741,7 +741,7 @@ diff --git a/src/game/Tarnished.cpp b/src/game/Tarnished.cpp
 new file mode 100644
 --- /dev/null
 +++ b/src/game/Tarnished.cpp
-@@ -0,0 +1,508 @@
+@@ -0,0 +1,519 @@
 +// SPDX-License-Identifier: MIT OR Apache-2.0
 +// v2 capability, v1 envelopes with optional reference-stamina tails; see protocol/tarnished.rs.
 +#include "Tarnished.h"
@@ -1265,7 +1265,7 @@ diff --git a/src/game/Tarnished.h b/src/game/Tarnished.h
 new file mode 100644
 --- /dev/null
 +++ b/src/game/Tarnished.h
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,93 @@
 +// SPDX-License-Identifier: MIT OR Apache-2.0
 +#ifndef TARNISHED_H
 +#define TARNISHED_H

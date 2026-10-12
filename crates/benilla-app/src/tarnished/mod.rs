@@ -345,55 +345,6 @@ fn tick(
                         seq: play_seq.next(),
                     });
                 }
-
-                #[derive(Component)]
-                struct StaminaHud;
-
-                fn spawn_hud(mut commands: Commands) {
-                    commands.spawn((
-                        StaminaHud,
-                        Node {
-                            position_type: PositionType::Absolute,
-                            bottom: Val::Percent(14.0),
-                            left: Val::Percent(4.0),
-                            ..default()
-                        },
-                        Text::new(""),
-                        TextFont::default(),
-                        TextColor(Color::srgb(0.65, 0.95, 0.5)),
-                        Pickable::IGNORE,
-                        Visibility::Hidden,
-                    ));
-                }
-
-                fn draw_hud(
-                    drive: Res<Drive>,
-                    assets: Res<AssetServer>,
-                    mut hud: Query<(&mut Text, &mut TextFont, &mut Visibility), With<StaminaHud>>,
-                    mut font: Local<Option<Handle<Font>>>,
-                ) {
-                    let Ok((mut text, mut style, mut visibility)) = hud.single_mut() else {
-                        return;
-                    };
-                    *visibility = if drive.active {
-                        Visibility::Visible
-                    } else {
-                        Visibility::Hidden
-                    };
-                    if !drive.active {
-                        return;
-                    }
-                    style.font = font
-                        .get_or_insert_with(|| crate::char_select::wow_font(&assets))
-                        .clone();
-                    style.font_size = 20.0;
-                    text.0 = format!(
-                        "Tarnished  Stamina {:.0}{}{}",
-                        drive.stamina,
-                        if drive.guarding { "  GUARD" } else { "" },
-                        if drive.lock.is_some() { "  LOCK" } else { "" }
-                    );
-                }
             }
         }
         while let Some(hit) = incoming.pop_front() {
@@ -498,4 +449,53 @@ fn tick(
         }
     }
     link.publish(drive, time.elapsed_secs_f64(), &net, false);
+}
+
+#[derive(Component)]
+struct StaminaHud;
+
+fn spawn_hud(mut commands: Commands) {
+    commands.spawn((
+        StaminaHud,
+        Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Percent(14.0),
+            left: Val::Percent(4.0),
+            ..default()
+        },
+        Text::new(""),
+        TextFont::default(),
+        TextColor(Color::srgb(0.65, 0.95, 0.5)),
+        Pickable::IGNORE,
+        Visibility::Hidden,
+    ));
+}
+
+fn draw_hud(
+    drive: Res<Drive>,
+    assets: Res<AssetServer>,
+    mut hud: Query<(&mut Text, &mut TextFont, &mut Visibility), With<StaminaHud>>,
+    mut font: Local<Option<Handle<Font>>>,
+) {
+    let Ok((mut text, mut style, mut visibility)) = hud.single_mut() else {
+        return;
+    };
+    *visibility = if drive.active {
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
+    };
+    if !drive.active {
+        return;
+    }
+    style.font = font
+        .get_or_insert_with(|| crate::char_select::wow_font(&assets))
+        .clone();
+    style.font_size = 20.0;
+    text.0 = format!(
+        "Tarnished  Stamina {:.0}{}{}",
+        drive.stamina,
+        if drive.guarding { "  GUARD" } else { "" },
+        if drive.lock.is_some() { "  LOCK" } else { "" }
+    );
 }
