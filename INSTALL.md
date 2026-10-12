@@ -9,12 +9,16 @@ step when you run it again.
 ### Tarnished action table
 
 This is an optional experimental development setup. Supply your own
-ELDEN RING install and unpack its containers with UXM/WitchyBND into a separate folder.
+ELDEN RING install and follow the complete
+[README setup and supervised testing guide](README.md#set-up-and-test-tarnished-combat).
+Unpack copies of its containers with UXM/WitchyBND into a separate folder; never patch
+or write into the original install.
 Set `ER_FILES` to that folder (`chr/` and `regulation-bin/*.param`) and `ER_GAME_DIR` to
 the game's `Game` folder containing `oo2core_6_win64.dll`. The pinned extractor needs
 `c0000.anibnd.dcx` and the `c0000_a00_hi`, `a00_lo`, `a00_md`, `a0x`, `a1x`,
 `a2x`, `a3x`, `a4x`, `a5x` animation packs (`.anibnd.dcx`).
-On Linux/macOS also supply Wine and set `WINE_PYTHON` to a Windows `python.exe`; setup
+Use 64-bit Python 3.10+. On Linux/macOS also supply Wine and set `WINE_PYTHON` to an
+existing 64-bit Windows `python.exe`; setup
 does not install either.
 
 From the repository root:
@@ -23,6 +27,8 @@ From the repository root:
 python3 setup/tarnished.py
 cargo test -p benilla-tarnished --features er-data
 cargo build --release -p benilla --features er-data
+setup/build-server.sh
+docker compose -p world-of-skatecraft -f server/compose.yaml up -d --force-recreate
 ./play.sh
 ```
 
@@ -45,13 +51,17 @@ normal setup: it extracts both inputs if needed and builds the release launcher 
 setup reuses already-prepared inputs, including on Windows, but enables `er-data` only with
 this explicit flag; leftover extraction files cannot silently change an ordinary build.
 `play.sh` / `play.bat` select the baked animation file; they run the release binary
-that setup built. Upstream is a binary-only Bevy 0.19 sandbox, so the bridge vendors exact
+that setup built, without rebuilding, and force `WOW_HOST=localhost`. For a remote server,
+launch the release binary directly as described in the README. Upstream is a binary-only
+Bevy 0.19 sandbox, so the bridge vendors exact
 pinned sources and isolates its math rather than adding an invalid Cargo git library dependency
 or upgrading the WoW renderer.
 The vmangos image build applies `skatecraft.patch` and then `tarnished.patch`; a stock server
 receives only the safe addon discovery message and never an unnegotiated Tarnished opcode.
 See [README.md](README.md#tarnished-combat-experimental) for controller and stance controls.
 Combat verification must be supervised with GM mode off; do not run an unattended combat probe.
+Use ordinary (`--gm 0`) separate accounts. The server build command above requires Linux/Bash;
+Windows setup's stock server cannot enable Tarnished combat.
 
 You need:
 
