@@ -227,6 +227,11 @@ fn parse_server_body(
             r = &[];
             packet
         }
+        crate::tarnished::SMSG_TARNISHED => {
+            let packet = ServerPacket::Tarnished(crate::tarnished::decode_relay(r)?);
+            r = &[];
+            packet
+        }
         opcode::SMSG_AUTH_CHALLENGE => ServerPacket::AuthChallenge {
             server_seed: read_u32_le(&mut r)?,
         },

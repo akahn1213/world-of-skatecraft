@@ -111,6 +111,7 @@ impl LoginRefusal {
 )]
 pub enum SessionEvent {
     Skate(crate::skate::Relay),
+    Tarnished(crate::tarnished::Relay),
     /// A login attempt reached `stage`; emitted by the IO thread, never wire-decoded.
     LoginStage {
         stage: LoginStage,

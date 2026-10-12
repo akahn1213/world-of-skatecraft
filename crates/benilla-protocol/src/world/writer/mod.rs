@@ -75,6 +75,12 @@ impl WorldWriter {
         crate::skate::decode(body)?;
         self.send(crate::skate::CMSG_SKATE, body)
     }
+    /// The Tarnished combat extension's uplink: an attack verdict, a defence verdict, a visual
+    /// pose or a hello. Validated locally, as skating's is.
+    pub fn tarnished(&mut self, body: &[u8]) -> Result<()> {
+        crate::tarnished::decode(body)?;
+        self.send(crate::tarnished::CMSG_TARNISHED, body)
+    }
     /// Frame, encrypt and write one packet: the sole write path every verb goes through.
     fn send(&mut self, opcode: u16, body: &[u8]) -> Result<()> {
         let sent = send_packet(&mut self.stream, Some(&mut self.encrypter), opcode, body);

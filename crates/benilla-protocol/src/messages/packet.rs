@@ -61,6 +61,7 @@ pub struct CreatureQueryInfo {
 /// A decoded server packet; an unmodelled opcode is [`Self::Other`].
 pub enum ServerPacket {
     Skate(crate::skate::Relay),
+    Tarnished(crate::tarnished::Relay),
     AuthChallenge {
         server_seed: u32,
     },
@@ -1259,6 +1260,7 @@ impl ServerPacket {
     pub fn name(&self) -> String {
         match self {
             ServerPacket::Skate(_) => "SMSG_SKATE".into(),
+            ServerPacket::Tarnished(_) => "SMSG_TARNISHED".into(),
             ServerPacket::AuthChallenge { .. } => "SMSG_AUTH_CHALLENGE".into(),
             ServerPacket::AuthResponse { .. } => "SMSG_AUTH_RESPONSE".into(),
             ServerPacket::CharEnum { .. } => "SMSG_CHAR_ENUM".into(),
