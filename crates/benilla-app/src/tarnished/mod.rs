@@ -491,7 +491,7 @@ fn tick(
                 .with_y(0.0)
                 .normalize_or_zero();
             let forward = Quat::from_rotation_y(drive.yaw) * Vec3::NEG_Z;
-            let dot = toward.dot(forward);
+            let dot = toward.dot(forward).clamp(-1.0, 1.0);
             let source_damage = source.map_or(0.0, |(_, _, s, _)| {
                 (s.0.unit_min_damage().unwrap_or(0.0) + s.0.unit_max_damage().unwrap_or(0.0)) * 0.5
             });

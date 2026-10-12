@@ -31,8 +31,11 @@ tools, scratch, the generated table and `assets/player_anims.bin` beneath ignore
 `.setup/tarnished/`, outside the input
 folders. It reads the install, never writes to it. `ER_EXTRACTED` can instead name an existing
 generated Rust action table; only use a trusted local table because Cargo compiles it as code.
-`ER_ANIMATIONS` can name an existing baked `player_anims.bin` at runtime. Both are required:
-the client refuses the stance rather than substitute stock action animations when the animation
+`ER_ANIMATIONS` can name an existing baked `player_anims.bin` at runtime. With a custom
+`ER_EXTRACTED`, set `ER_ANIMATIONS` to the matching bake from the same extraction.
+`ER_EXTRACTED` is compiled into the launcher, not read by the play script; changing it requires
+rebuilding the launcher. Merely changing the runtime animation path cannot change combat timings.
+Both outputs are required: the client refuses the stance rather than substitute stock action animations when the animation
 file is missing. Keep the baked file on disk beside your development checkout or set its absolute
 path for a relocated player build. Nothing generated may be committed. Sound baking is not
 included. No live combat run is claimed.
