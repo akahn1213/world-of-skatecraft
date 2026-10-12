@@ -23,6 +23,7 @@ pub(super) fn control(
         Res<benilla_world::view::ViewDistance>,
         // While riding, the skate mode's pose drives the body, the camera and the wire.
         Res<crate::skate::SkateDrive>,
+        Res<crate::tarnished::Drive>,
     ),
     mut net: (
         Res<NetCommands>,
@@ -359,6 +360,103 @@ pub(super) fn control(
             }
             // After the park, so a fear's ack carries the stopped word.
             movement_net::ack_speeds_undriven(&net.0 .0, &player, &speed_acks);
+            return;
+        }
+        if pointer.7.active {
+            let drive = &pointer.7;
+            let before = player.pos;
+            player.pos = drive.position;
+            player.face_yaw = drive.yaw;
+            player.model_yaw = drive.yaw;
+            player.horiz_vel = drive.velocity.with_y(0.0);
+            player.vel_y = drive.velocity.y;
+            let was_falling = player.move_flags & move_flags::FALLING != 0;
+            if drive.falling && !was_falling {
+                player.airborne_since = Some(time.elapsed_secs());
+                player.fall_start_y = before.y;
+                player.jump_zspeed = 0.0;
+            }
+            let fall_time = player
+                .airborne_since
+                .map_or(0, |at| ((time.elapsed_secs() - at) * 1000.0) as u32);
+            let orientation = Quat::from_rotation_y(drive.yaw);
+            let forward = drive.velocity.dot(orientation * Vec3::NEG_Z);
+            let side = drive.velocity.dot(orientation * Vec3::X);
+            let flags = (if forward > 0.1 {
+                move_flags::FORWARD
+            } else if forward < -0.1 {
+                move_flags::BACKWARD
+            } else {
+                0
+            }) | (if side > 0.1 {
+                move_flags::STRAFE_RIGHT
+            } else if side < -0.1 {
+                move_flags::STRAFE_LEFT
+            } else {
+                0
+            }) | if drive.falling {
+                move_flags::FALLING
+            } else {
+                0
+            };
+            body_pose::drive(
+                &player,
+                &mut body,
+                &mut net.6,
+                false,
+                0.0,
+                flags,
+                flags,
+                was_falling && !drive.falling,
+                stand_state,
+            );
+            movement_net::stream_self_movement(
+                &net.0 .0,
+                &mut player,
+                flags,
+                0.0,
+                movement_net::ArcEdges {
+                    jumped: false,
+                    wire_launch: false,
+                    air_nudged: false,
+                    landed: was_falling && !drive.falling,
+                    fall_time,
+                },
+                time.elapsed_secs(),
+                &speed_acks,
+                None,
+                None,
+                movement_net::SkipClock {
+                    dt,
+                    held: false,
+                    mover: self_guid,
+                },
+            );
+            if !drive.falling {
+                player.airborne_since = None;
+            }
+            if drive.lock.is_some() {
+                cam.yaw = drive.yaw;
+            }
+            let head = player.pos + Vec3::Y * (CAPSULE_HEIGHT - CAPSULE_RADIUS);
+            camera::seat_on_subject(
+                dt,
+                0.0,
+                player.pos,
+                head,
+                None,
+                view_subject,
+                &mut rig,
+                &mut cam,
+                &mut cam_t,
+                &collide,
+                &camera::FollowInput {
+                    cfg: follow_cfg,
+                    face_yaw: player.face_yaw,
+                    command: follow_command,
+                },
+                &dynamics,
+            );
             return;
         }
         if pointer.6.active {

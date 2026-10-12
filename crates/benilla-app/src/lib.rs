@@ -101,7 +101,6 @@ mod opaque2d;
 /// way out registers through it.
 mod shutdown;
 mod skate;
-mod tarnished;
 mod smart_rect;
 mod sound;
 /// The two talent spell-modifier tables (`SMSG_SET_FLAT_/PCT_SPELL_MODIFIER`) and the read that
@@ -110,6 +109,7 @@ mod spell;
 /// The melee swing refusal's latch + 4 s repeat (`SMSG_ATTACKSWING_*`).
 mod swing_refusal;
 mod target;
+mod tarnished;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod text_filter;

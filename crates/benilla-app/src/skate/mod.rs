@@ -499,7 +499,14 @@ fn update(
     mut audio: ResMut<sound::SkateAudio>,
     profession: profession::Profession,
     mut score: ResMut<score::SkateScore>,
+    tarnished: Res<crate::tarnished::Drive>,
 ) {
+    if tarnished.active {
+        if drive.active || host.activating {
+            stop(&mut host, &mut drive, &mut pose);
+        }
+        return;
+    }
     let aspect = windows
         .single()
         .map(|w| w.width() / w.height().max(1.0))
@@ -767,6 +774,7 @@ pub(crate) fn plugin(app: &mut App) {
             )
                 .chain()
                 .in_set(WorldStage::Input)
+                .after(crate::tarnished::TarnishedInputSet)
                 .before(crate::player::PlayerControlSet)
                 .in_set(crate::char_select::InWorldGated),
         )

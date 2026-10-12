@@ -125,6 +125,10 @@ impl Combat {
             weapon_class: state.weapon_class,
             attack_kind: state.attack_kind,
             targets: fresh,
+            stamina_milli: backend
+                .active_stamina_damage()
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .map(|value| (value * 1000.0).round() as u32),
         })
     }
 
@@ -169,6 +173,9 @@ mod tests {
             None
         }
         fn active_motion_value(&self) -> Option<f32> {
+            None
+        }
+        fn active_stamina_damage(&self) -> Option<f32> {
             None
         }
         fn guard(&self, _: f32, _: f32) -> Option<crate::defence::Guard> {
@@ -239,6 +246,7 @@ mod tests {
                 school: 0,
                 amount: 0,
                 melee: true,
+                stamina_milli: None,
             };
             assert!(combat.defence(incoming, DefenceOutcome::Iframe).is_some());
             assert!(combat.defence(incoming, DefenceOutcome::Iframe).is_none());
@@ -289,6 +297,7 @@ mod tests {
             school: 0,
             amount: 40,
             melee: true,
+            stamina_milli: None,
         };
         assert!(combat
             .defence(incoming, DefenceOutcome::Hit { taken: 39 })

@@ -354,6 +354,7 @@ pub(in crate::net) fn extrapolate_remote_units(
             Without<Spline>,
             Without<ActiveMover>,
             Without<crate::skate::replication::ReplicatedSkating>,
+            Without<crate::tarnished::replication::ReplicatedTarnished>,
         ),
     >,
 ) {

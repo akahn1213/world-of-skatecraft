@@ -120,6 +120,13 @@ impl Backend for ReferenceBackend {
         self.player.active_hit().map(|hit| hit.mv)
     }
 
+    fn active_stamina_damage(&self) -> Option<f32> {
+        // AtkParam's guard correction is extracted per hit (pinned extract.py::judge).
+        self.player
+            .active_hit()
+            .map(|hit| hit.attack * hit.guard_damage / 4.0)
+    }
+
     fn guard(&self, stamina_damage: f32, source_facing_dot: f32) -> Option<Guard> {
         self.player.guard_up().then_some(Guard {
             stamina: self.player.stamina,

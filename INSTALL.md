@@ -8,7 +8,7 @@ step when you run it again.
 
 ### Tarnished action table
 
-This is an optional development setup, not a playable Tarnished installer. Supply your own
+This is an optional experimental development setup. Supply your own
 ELDEN RING install and unpack its containers with UXM/WitchyBND into a separate folder.
 Set `ER_FILES` to that folder (`chr/` and `regulation-bin/*.param`) and `ER_GAME_DIR` to
 the game's `Game` folder containing `oo2core_6_win64.dll`. The pinned extractor needs
@@ -21,6 +21,7 @@ From the repository root:
 ```sh
 python3 setup/tarnished.py
 cargo test -p benilla-tarnished --features er-data
+cargo build -p benilla --features er-data
 ```
 
 The script downloads only the extraction tools from the vendor's pinned revision and writes
@@ -29,6 +30,10 @@ folders. It reads the install, never writes to it. `ER_EXTRACTED` can instead na
 generated Rust action table; only use a trusted local table because Cargo compiles it as code.
 Nothing generated may be committed. Animation and sound baking and a runtime profile generator
 are not provided by this command. No live combat run is claimed.
+The vmangos image build applies `skatecraft.patch` and then `tarnished.patch`; a stock server
+receives only the safe addon discovery message and never an unnegotiated Tarnished opcode.
+See [README.md](README.md#tarnished-combat-experimental) for controller and stance controls.
+Combat verification must be supervised with GM mode off; do not run an unattended combat probe.
 
 You need:
 

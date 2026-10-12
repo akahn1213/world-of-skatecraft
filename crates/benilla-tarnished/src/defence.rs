@@ -151,6 +151,7 @@ mod tests {
             school: SCHOOL_PHYSICAL,
             amount,
             melee: true,
+            stamina_milli: None,
         }
     }
 

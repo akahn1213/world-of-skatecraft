@@ -29,7 +29,7 @@ pub const HELLO: [u8; 2] = [1, 0];
 /// The capability version this build speaks. The discovery handshake is independent of skating's:
 /// a server that relays skating need not relay Tarnished combat, and an older peer that knows
 /// neither is undisturbed.
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 
 fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid tarnished payload")
@@ -125,11 +125,18 @@ pub struct AttackVerdict {
     /// The attack kind within the moveset (a [`data::AttackKind`]-style index).
     pub attack_kind: u8,
     pub targets: Vec<AttackTarget>,
+    /// Reference stamina damage before the guard multiplier, in thousandths of a point.
+    /// Optional tail preserves decoding of the original v1 offence envelope.
+    pub stamina_milli: Option<u32>,
 }
 
 impl AttackVerdict {
     pub fn validate(&self) -> io::Result<()> {
-        if self.weapon_class > 24 || self.targets.is_empty() || self.targets.len() > MAX_TARGETS {
+        if self.weapon_class > 24
+            || self.targets.is_empty()
+            || self.targets.len() > MAX_TARGETS
+            || self.stamina_milli.is_some_and(|v| v > 1_000_000_000)
+        {
             return Err(invalid());
         }
         let mut seen = HashSet::new();
@@ -155,6 +162,9 @@ impl AttackVerdict {
             out.extend(t.guid.to_le_bytes());
             out.extend(t.damage.to_le_bytes());
             out.push(t.flags);
+        }
+        if let Some(stamina) = self.stamina_milli {
+            out.extend(stamina.to_le_bytes());
         }
         Ok(())
     }
@@ -184,6 +194,7 @@ impl AttackVerdict {
             weapon_class,
             attack_kind,
             targets,
+            stamina_milli: if r.is_empty() { None } else { Some(u32_(r)?) },
         };
         verdict.validate()?;
         Ok(verdict)
@@ -525,6 +536,8 @@ pub struct Incoming {
     pub amount: u32,
     /// A melee swing (eligible for dodge/parry) rather than a spell.
     pub melee: bool,
+    /// Attacker-owned reference stamina damage; stock attacks have no such action metadata.
+    pub stamina_milli: Option<u32>,
 }
 
 mod relay_tag {
@@ -594,8 +607,13 @@ pub fn decode_relay(body: &[u8]) -> io::Result<Relay> {
                 school: u8_(&mut r)?,
                 amount: u32_(&mut r)?,
                 melee: bool_(&mut r)?,
+                stamina_milli: if r.is_empty() {
+                    None
+                } else {
+                    Some(u32_(&mut r)?)
+                },
             };
-            if !r.is_empty() {
+            if !r.is_empty() || incoming.stamina_milli.is_some_and(|v| v > 1_000_000_000) {
                 return Err(invalid());
             }
             Relay::Incoming(incoming)
@@ -614,6 +632,9 @@ pub fn encode_incoming(incoming: &Incoming) -> Vec<u8> {
     out.push(incoming.school);
     out.extend(incoming.amount.to_le_bytes());
     out.push(u8::from(incoming.melee));
+    if let Some(stamina) = incoming.stamina_milli {
+        out.extend(stamina.to_le_bytes());
+    }
     out
 }
 
@@ -658,6 +679,7 @@ mod tests {
                     flags: TARGET_FLAG_GLANCING,
                 },
             ],
+            stamina_milli: None,
         }
     }
 
@@ -705,6 +727,7 @@ mod tests {
             school: 0,
             amount: 100,
             melee: true,
+            stamina_milli: None,
         };
         let mut reply = DefenceVerdict {
             sequence: 1,
@@ -792,6 +815,7 @@ mod tests {
             school: 2,
             amount: 450,
             melee: true,
+            stamina_milli: None,
         };
         assert_eq!(
             decode_relay(&encode_incoming(&incoming)).unwrap(),
@@ -808,6 +832,42 @@ mod tests {
         .encode()
         .unwrap();
         assert!(encode_relay(1, 1, &defence).is_err());
+    }
+
+    #[test]
+    fn reference_stamina_tail_roundtrips_without_breaking_stock_envelopes() {
+        let mut offence = attack();
+        offence.stamina_milli = Some(23_750);
+        let wire = Packet::Attack(offence.clone()).encode().unwrap();
+        assert_eq!(decode(&wire).unwrap(), Packet::Attack(offence));
+        let mut malformed = wire.clone();
+        malformed.push(0);
+        assert!(decode(&malformed).is_err());
+        let incoming = Incoming {
+            attack_id: 1,
+            source_guid: 2,
+            school: 0,
+            amount: 50,
+            melee: true,
+            stamina_milli: Some(23_750),
+        };
+        let body = encode_incoming(&incoming);
+        assert_eq!(body.len(), 23);
+        assert_eq!(decode_relay(&body).unwrap(), Relay::Incoming(incoming));
+        let stock = Incoming {
+            stamina_milli: None,
+            ..incoming
+        };
+        assert_eq!(encode_incoming(&stock).len(), 19);
+        assert_eq!(
+            decode_relay(&encode_incoming(&stock)).unwrap(),
+            Relay::Incoming(stock)
+        );
+        let bad = Incoming {
+            stamina_milli: Some(u32::MAX),
+            ..incoming
+        };
+        assert!(decode_relay(&encode_incoming(&bad)).is_err());
     }
 
     #[test]

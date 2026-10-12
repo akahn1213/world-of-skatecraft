@@ -249,7 +249,7 @@ diff --git a/src/game/Objects/Unit.cpp b/src/game/Objects/Unit.cpp
              break;
          default:
              break;
-@@ -2225,15 +2247,77 @@
+@@ -2225,15 +2247,85 @@
          damageInfo->damage -= damageInfo->blocked;
      }
  
@@ -306,6 +306,14 @@ diff --git a/src/game/Objects/Unit.cpp b/src/game/Objects/Unit.cpp
 +    if (!hit->target->IsAlive() || !IsAlive() || GetMap() != hit->target->GetMap())
 +        return;
 +    FinishMeleeCalculation(hit, answer, true, !stock);
++    if (hit->hitOutCome == MELEE_HIT_MISS)
++        hit->HitInfo |= HITINFO_MISS;
++    else
++        hit->HitInfo &= ~HITINFO_MISS;
++    if (hit->hitOutCome == MELEE_HIT_BLOCK)
++        hit->HitInfo |= HITINFO_BLOCK;
++    else
++        hit->HitInfo &= ~HITINFO_BLOCK;
 +    // Designated offence already included these modifiers in the supplied amount.
 +    if (hit->hitOutCome == MELEE_HIT_MISS || hit->hitOutCome == MELEE_HIT_DODGE ||
 +        hit->hitOutCome == MELEE_HIT_PARRY)
@@ -328,7 +336,7 @@ diff --git a/src/game/Objects/Unit.cpp b/src/game/Objects/Unit.cpp
      if (!pVictim->IsAlive())
          return;
  
-@@ -2258,7 +2342,61 @@
+@@ -2258,7 +2350,61 @@
      }
  
      CalcDamageInfo damageInfo;
@@ -391,7 +399,7 @@ diff --git a/src/game/Objects/Unit.cpp b/src/game/Objects/Unit.cpp
  
      ProcDamageAndSpell(ProcSystemArguments(damageInfo.target, damageInfo.procAttacker, damageInfo.procVictim, damageInfo.procEx, damageInfo.totalDamage, damageInfo.totalDamage + damageInfo.totalAbsorb + damageInfo.totalResist, damageInfo.attackType));
  
-@@ -8276,6 +8414,7 @@
+@@ -8276,6 +8422,7 @@
  void Unit::RemoveFromWorld()
  {
      // cleanup
@@ -587,7 +595,7 @@ diff --git a/src/game/Spells/Spell.cpp b/src/game/Spells/Spell.cpp
  
      // spell fly from visual cast object
      SpellCaster* affectiveObject = GetAffectiveCasterObject();
-@@ -1142,6 +1145,59 @@
+@@ -1142,6 +1145,65 @@
      if (!unit)
          return;
  
@@ -634,6 +642,12 @@ diff --git a/src/game/Spells/Spell.cpp b/src/game/Spells/Spell.cpp
 +                resume.damage = answer->taken;
 +                resume.tarnishedBlock = answer->absorbed;
 +            }
++            // Native delayed launch leaves misses with zero damage; prepared hits must do the same.
++            if (resume.missCondition != SPELL_MISS_NONE)
++            {
++                resume.damage = 0;
++                resume.tarnishedBlock = 0;
++            }
 +            DoAllEffectOnTarget(&resume);
 +        };
 +        if (Tarnished::Defer(m_casterUnit, unit->ToPlayer(), amount,
@@ -647,7 +661,7 @@ diff --git a/src/game/Spells/Spell.cpp b/src/game/Spells/Spell.cpp
      if (getState() == SPELL_STATE_DELAYED && (WorldTimer::getMSTime() - target->timeDelay) <= unit->m_lastSanctuaryTime && !m_spellInfo->IsPositiveSpell())
          return;
  
-@@ -1194,7 +1250,7 @@
+@@ -1194,7 +1256,7 @@
          procVictim   = PROC_FLAG_NONE;
      }
  
@@ -656,7 +670,7 @@ diff --git a/src/game/Spells/Spell.cpp b/src/game/Spells/Spell.cpp
      {
          // mark effects that were already handled in Spell::HandleDelayedSpellLaunch on spell launch as processed
          for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i)
-@@ -1367,14 +1423,15 @@
+@@ -1367,14 +1429,15 @@
          }
      }
      // Do damage and triggers
@@ -674,7 +688,7 @@ diff --git a/src/game/Spells/Spell.cpp b/src/game/Spells/Spell.cpp
          {
              // Copy damage calculated from HandleDelayedSpellLaunch
              damageInfo.damage = m_damage;
-@@ -1411,9 +1468,19 @@
+@@ -1411,9 +1474,19 @@
                  damageInfo.damage += damageInfo.damage / 2; // 150% of normal damage
          }
  
@@ -727,9 +741,9 @@ diff --git a/src/game/Tarnished.cpp b/src/game/Tarnished.cpp
 new file mode 100644
 --- /dev/null
 +++ b/src/game/Tarnished.cpp
-@@ -0,0 +1,485 @@
+@@ -0,0 +1,508 @@
 +// SPDX-License-Identifier: MIT OR Apache-2.0
-+// v1 wire layout: crates/benilla-protocol/src/tarnished.rs.
++// v2 capability, v1 envelopes with optional reference-stamina tails; see protocol/tarnished.rs.
 +#include "Tarnished.h"
 +#include "Chat.h"
 +#include "Player.h"
@@ -910,20 +924,20 @@ new file mode 100644
 +            return false;
 +        auto& state = player->tarnished;
 +        uint32 now = WorldTimer::getMSTime();
-+        if (message != "TARNISHED\tV\t1" ||
++        if (message != "TARNISHED\tV\t2" ||
 +            (state.discovered && WorldTimer::getMSTimeDiff(state.capsReceipt, now) < 1000))
 +            return true;
 +        state.discovered = true;
 +        state.capsReceipt = now;
 +        WorldPacket response;
-+        ChatHandler::BuildChatPacket(response, CHAT_MSG_PARTY, "TARNISHED\tCAPS\t1", LANG_ADDON,
++        ChatHandler::BuildChatPacket(response, CHAT_MSG_PARTY, "TARNISHED\tCAPS\t2", LANG_ADDON,
 +                                     CHAT_TAG_NONE, ObjectGuid());
 +        player->GetSession()->SendPacket(&response);
 +        return true;
 +    }
 +
 +    bool Defer(Unit* source, Player* defender, uint32 amount, uint8 school, bool melee,
-+               std::function<void(Unit*, Player*, Answer const*)> finish)
++               std::function<void(Unit*, Player*, Answer const*)> finish, uint32 stamina)
 +    {
 +        if (!Active(defender) || !Allowed(source, defender, melee) ||
 +            defender->tarnished.pending.size() >= 64)
@@ -945,6 +959,8 @@ new file mode 100644
 +        defender->tarnished.pending.push_back(std::move(pending));
 +        WorldPacket packet(SMSG_TARNISHED, 19);
 +        packet << uint8(0x13) << token << uint64(source->GetGUID()) << school << amount << uint8(melee);
++        if (stamina != std::numeric_limits<uint32>::max())
++            packet << stamina;
 +        defender->GetSession()->SendPacket(&packet);
 +        return true;
 +    }
@@ -1032,6 +1048,23 @@ new file mode 100644
 +        return true;
 +    }
 +
++    static bool ContactBatch(State const& state, uint32 id, uint8 weapon, uint8 kind,
++                             std::unordered_set<uint64> const& guids,
++                             uint32 stamina = std::numeric_limits<uint32>::max())
++    {
++        if (!state.hasAttack)
++            return true;
++        if (id != state.attackId)
++            return Newer(id, state.attackId);
++        if (weapon != state.attackWeapon || kind != state.attackKind || stamina != state.attackStamina ||
++            state.attackTargets.size() + guids.size() > 16)
++            return false;
++        for (uint64 guid : guids)
++            if (state.attackTargets.count(guid))
++                return false;
++        return true;
++    }
++
 +    static void Attack(Player* player, ByteBuffer data, uint32 received)
 +    {
 +        if (!Active(player) || data.size() < 30)
@@ -1042,7 +1075,7 @@ new file mode 100644
 +        data >> sequence >> id >> sample >> weapon >> kind >> count;
 +        // The approved slice is one-handed sword plus shield, not arbitrary movesets.
 +        if ((weapon != 1 && weapon != 24) || kind > 19 || !count || count > 16 ||
-+            data.size() != 17 + size_t(count) * 13)
++            (data.size() != 17 + size_t(count) * 13 && data.size() != 21 + size_t(count) * 13))
 +            return;
 +        struct Contact { Unit* target; uint32 damage; uint8 flags; };
 +        std::vector<Contact> contacts;
@@ -1059,11 +1092,26 @@ new file mode 100644
 +                return;
 +            contacts.push_back({target, damage, flags});
 +        }
++        uint32 stamina = std::numeric_limits<uint32>::max();
++        if (data.rpos() != data.size())
++        {
++            data >> stamina;
++            if (stamina > 1000000000)
++                return;
++        }
 +        auto& state = player->tarnished;
++        bool sameSwing = state.hasAttack && id == state.attackId;
 +        if ((state.hasCommand && !Newer(sequence, state.commandSequence)) ||
-+            (state.hasAttack && !Newer(id, state.attackId)) ||
++            !ContactBatch(state, id, weapon, kind, seen, stamina) ||
 +            !Budget(state, received, false, false))
 +            return;
++        if (!sameSwing)
++            state.attackTargets.clear();
++        state.attackWeapon = weapon;
++        state.attackKind = kind;
++        state.attackStamina = stamina;
++        for (auto const& contact : contacts)
++            state.attackTargets.insert(contact.target->GetGUID());
 +        state.hasCommand = state.hasAttack = true;
 +        state.commandSequence = sequence;
 +        state.attackId = id;
@@ -1084,7 +1132,7 @@ new file mode 100644
 +                hit.target = defender;
 +                source->FinishTarnishedMelee(&hit, answer, false);
 +            };
-+            if (!Defer(player, contact.target->ToPlayer(), hit.totalDamage, 0, true, finish))
++            if (!Defer(player, contact.target->ToPlayer(), hit.totalDamage, 0, true, finish, stamina))
 +                player->FinishTarnishedMelee(&hit, nullptr, false);
 +        }
 +    }
@@ -1217,7 +1265,7 @@ diff --git a/src/game/Tarnished.h b/src/game/Tarnished.h
 new file mode 100644
 --- /dev/null
 +++ b/src/game/Tarnished.h
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,90 @@
 +// SPDX-License-Identifier: MIT OR Apache-2.0
 +#ifndef TARNISHED_H
 +#define TARNISHED_H
@@ -1226,6 +1274,8 @@ new file mode 100644
 +#include "ObjectGuid.h"
 +#include <deque>
 +#include <functional>
++#include <limits>
++#include <unordered_set>
 +#include <vector>
 +
 +class Player;
@@ -1284,6 +1334,10 @@ new file mode 100644
 +        uint32 poseSequence = 0;
 +        uint32 commandSequence = 0;
 +        uint32 attackId = 0;
++        uint8 attackWeapon = 0;
++        uint8 attackKind = 0;
++        uint32 attackStamina = std::numeric_limits<uint32>::max();
++        std::unordered_set<uint64> attackTargets;
 +        bool hasCommand = false;
 +        bool hasAttack = false;
 +        uint32 budgetTime = 0;
@@ -1297,7 +1351,8 @@ new file mode 100644
 +    bool Active(Unit const*);
 +    bool SpellSupported(SpellEntry const*);
 +    bool Defer(Unit*, Player*, uint32, uint8, bool,
-+               std::function<void(Unit*, Player*, Answer const*)>);
++               std::function<void(Unit*, Player*, Answer const*)>,
++               uint32 stamina = std::numeric_limits<uint32>::max());
 +    void Update(Player*);
 +    void Clear(Player*, bool login = false);
 +    void ClearSource(Unit*);

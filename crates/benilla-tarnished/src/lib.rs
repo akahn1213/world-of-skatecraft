@@ -66,6 +66,7 @@ pub trait Backend: Send + Sync {
     fn active_swing(&self) -> Option<attack::Swing>;
     /// The motion value of the attack currently in its active frames, for damage scaling.
     fn active_motion_value(&self) -> Option<f32>;
+    fn active_stamina_damage(&self) -> Option<f32>;
     /// The guard held this instant, if any, for the defence resolver.
     fn guard(&self, stamina_damage: f32, source_facing_dot: f32) -> Option<defence::Guard>;
     /// A dodge-roll i-frame is open this instant.

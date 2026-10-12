@@ -36,7 +36,10 @@ guard arc, guard raise time and stamina multiplier as ESTIMATE; they are not ext
 `setup/tarnished.py` retrieves the pinned extraction tools into ignored `.setup/tarnished/`
 and generates the action table there. `er-data` compiles build-directory copies of this tree,
 substituting glam vector imports and including that table, leaving these vendor files untouched.
-The adapter is `crates/benilla-tarnished/src/reference.rs`; app and server combat hooks are absent.
+The adapter is `crates/benilla-tarnished/src/reference.rs`; the host/controller is
+`crates/benilla-app/src/tarnished/`, and the negotiated server routes are in
+`setup/vmangos/tarnished.patch`. WoW clips present the actions until an ER skeletal asset adapter
+exists; no animation or sound blobs are supplied by the action extractor.
 
 ## Checking it against upstream
 

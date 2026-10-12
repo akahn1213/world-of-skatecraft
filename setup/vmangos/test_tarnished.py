@@ -43,6 +43,52 @@ class TarnishedServerTests(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.scratch)
 
+    def test_actual_cpp_contact_batches_do_not_multiply_swing_damage(self):
+        cpp = added_file("src/game/Tarnished.cpp")
+        header = added_file("src/game/Tarnished.h")
+        code = r"""
+#include <cassert>
+#include <cstdint>
+#include <deque>
+#include <limits>
+#include <unordered_set>
+#include <vector>
+using uint8 = uint8_t; using uint32 = uint32_t; using uint64 = uint64_t;
+struct Pending {};
+"""
+        code += definition(header, "struct State", structure=True) + "\n"
+        code += definition(cpp, "static bool Newer") + "\n"
+        code += definition(cpp, "static bool ContactBatch") + "\n"
+        code += r"""
+int main() {
+    State s;
+    assert(ContactBatch(s, 1, 1, 0, {10}));
+    s.hasAttack = true; s.attackId = 1; s.attackWeapon = 1; s.attackKind = 0;
+    s.attackTargets = {10};
+    assert(ContactBatch(s, 1, 1, 0, {11}));
+    assert(!ContactBatch(s, 1, 1, 0, {10}));
+    assert(!ContactBatch(s, 1, 1, 1, {11}));
+    assert(!ContactBatch(s, 1, 24, 0, {11}));
+    assert(!ContactBatch(s, 1, 1, 0, {11}, 20000));
+    assert(!ContactBatch(s, 0, 1, 0, {11}));
+    assert(ContactBatch(s, 2, 1, 0, {10}));
+    s.attackStamina = 20000;
+    assert(ContactBatch(s, 1, 1, 0, {11}, 20000));
+    assert(!ContactBatch(s, 1, 1, 0, {11}, 19000));
+    s.attackStamina = UINT32_MAX;
+    for (uint64 guid = 11; guid <= 25; ++guid) s.attackTargets.insert(guid);
+    assert(!ContactBatch(s, 1, 1, 0, {26}));
+    s.attackId = UINT32_MAX;
+    assert(ContactBatch(s, 0, 1, 0, {26}));
+}
+"""
+        source = self.scratch / "contact_batches.cpp"
+        binary = self.scratch / "contact_batches"
+        source.write_text(code)
+        subprocess.run(["g++", "-std=c++14", "-Wall", "-Wextra", "-Werror",
+                        str(source), "-o", str(binary)], check=True)
+        subprocess.run([str(binary)], check=True)
+
     def test_actual_cpp_pose_and_defence_validation(self):
         cpp = added_file("src/game/Tarnished.cpp")
         header = added_file("src/game/Tarnished.h")
@@ -249,6 +295,7 @@ class Unit; class Player;
 enum MeleeHitOutcome { MELEE_HIT_NORMAL, MELEE_HIT_CRIT, MELEE_HIT_CRUSHING,
     MELEE_HIT_GLANCING, MELEE_HIT_MISS, MELEE_HIT_DODGE, MELEE_HIT_PARRY, MELEE_HIT_BLOCK };
 constexpr uint32 HITINFO_CRITICALHIT = 1, HITINFO_GLANCING = 2, HITINFO_CRUSHING = 4;
+constexpr uint32 HITINFO_MISS = 8, HITINFO_BLOCK = 16;
 constexpr uint32 PROC_EX_NORMAL_HIT = 1, PROC_EX_CRITICAL_HIT = 2, PROC_EX_BLOCK = 4;
 constexpr uint32 SPELL_AURA_MOD_CRIT_PERCENT_VERSUS = 0;
 namespace Tarnished {
@@ -283,6 +330,8 @@ public:
     float GetGlancingBlowDamageMultiplier(Unit*, uint32) const { return .7f; }
     void RollMeleeOutcomeAgainst(MeleeHitOutcome& out, uint32& flags, Unit*, uint32) {
         ++rolls; out = next;
+        if (out == MELEE_HIT_MISS) flags |= HITINFO_MISS;
+        if (out == MELEE_HIT_BLOCK) flags |= HITINFO_BLOCK;
         if (out == MELEE_HIT_CRIT) flags |= HITINFO_CRITICALHIT;
         if (out == MELEE_HIT_CRUSHING) flags |= HITINFO_CRUSHING;
         if (out == MELEE_HIT_GLANCING) flags |= HITINFO_GLANCING;
@@ -324,12 +373,27 @@ int main() {
     Tarnished::pending(&source, &defender, &block);
     assert(source.rolls == 1 && source.applications == 1 && source.last.totalDamage == 160);
     assert(source.last.procEx == (PROC_EX_CRITICAL_HIT | PROC_EX_BLOCK));
+    assert(source.last.HitInfo & HITINFO_BLOCK);
     source = Unit{}; source.next = MELEE_HIT_CRIT; source.swing(&defender);
     Tarnished::pending(&source, &defender, nullptr);
     assert(source.rolls == 1 && source.applications == 1 && source.last.totalDamage == 200);
     source = Unit{}; source.next = MELEE_HIT_DODGE; source.swing(&defender);
     Tarnished::pending(&source, &defender, nullptr);
     assert(source.rolls == 1 && source.applications == 1 && source.last.totalDamage == 0);
+    source = Unit{}; source.next = MELEE_HIT_MISS; source.swing(&defender);
+    Tarnished::Answer accepted; accepted.taken = 100;
+    Tarnished::pending(&source, &defender, &accepted);
+    assert(source.last.totalDamage == 100 && !(source.last.HitInfo & HITINFO_MISS));
+    source = Unit{}; source.next = MELEE_HIT_BLOCK; source.swing(&defender);
+    Tarnished::pending(&source, &defender, &accepted);
+    assert(source.last.totalDamage == 100 && !(source.last.HitInfo & HITINFO_BLOCK));
+    source = Unit{}; source.swing(&defender);
+    Tarnished::Answer iframe; iframe.outcome = 0;
+    Tarnished::pending(&source, &defender, &iframe);
+    assert(!source.last.totalDamage && (source.last.HitInfo & HITINFO_MISS));
+    source = Unit{}; source.next = MELEE_HIT_MISS; source.swing(&defender);
+    Tarnished::pending(&source, &defender, nullptr);
+    assert(!source.last.totalDamage && (source.last.HitInfo & HITINFO_MISS));
     source = Unit{}; source.next = MELEE_HIT_CRUSHING; source.swing(&defender);
     assert(Tarnished::amount == 150);
     Tarnished::Answer hit; hit.taken = 150;
@@ -342,6 +406,77 @@ int main() {
 """
         source = self.scratch / "melee.cpp"
         binary = self.scratch / "melee"
+        source.write_text(code)
+        subprocess.run(["g++", "-std=c++14", "-Wall", "-Wextra", "-Werror",
+                        str(source), "-o", str(binary)], check=True)
+        subprocess.run([str(binary)], check=True)
+
+    def test_actual_cpp_spell_continuation_clears_missed_damage(self):
+        cpp = added_file("src/game/Spells/Spell.cpp")
+        header = added_file("src/game/Tarnished.h")
+        code = r"""
+#include <cassert>
+#include <cstdint>
+using uint8 = uint8_t; using uint32 = uint32_t;
+enum SpellMissInfo { SPELL_MISS_NONE, SPELL_MISS_MISS, SPELL_MISS_RESIST,
+    SPELL_MISS_DODGE, SPELL_MISS_PARRY };
+struct Unit {};
+struct Player : Unit { bool alive = true; bool IsAlive() const { return alive; } };
+namespace Tarnished {
+"""
+        code += definition(header, "struct Answer", True) + "\n}\n"
+        code += r"""
+struct TargetInfo {
+    bool tarnishedStock = false;
+    SpellMissInfo missCondition = SPELL_MISS_NONE, tarnishedMiss = SPELL_MISS_NONE;
+    uint32 damage = 100, tarnishedUnresisted = 120, tarnishedBlock = 0;
+};
+class Spell {
+public:
+    unsigned holds = 1, applications = 0;
+    TargetInfo last;
+    void SetExecutedCurrently(bool on) { if (on) ++holds; else { assert(holds); --holds; } }
+    void DoAllEffectOnTarget(TargetInfo* target) { ++applications; last = *target; }
+    void resume(TargetInfo snapshot, Unit* source, Player* defender,
+                Tarnished::Answer const* answer) {
+        auto resume = snapshot;
+"""
+        code += definition(cpp, "auto finish = [this, resume]") + ";\n"
+        code += "finish(source, defender, answer);\n}\n};\n"
+        code += r"""
+int main() {
+    Unit source; Player defender; TargetInfo target;
+    Spell spell; Tarnished::Answer iframe; iframe.outcome = 0;
+    spell.resume(target, &source, &defender, &iframe);
+    assert(!spell.holds && spell.applications == 1);
+    assert(spell.last.missCondition == SPELL_MISS_MISS && !spell.last.damage);
+    assert(!spell.last.tarnishedBlock && !spell.last.tarnishedStock);
+    for (auto miss : {SPELL_MISS_MISS, SPELL_MISS_RESIST, SPELL_MISS_DODGE, SPELL_MISS_PARRY}) {
+        spell = Spell{}; target.tarnishedMiss = miss;
+        spell.resume(target, &source, &defender, nullptr);
+        assert(!spell.holds && spell.applications == 1 && spell.last.tarnishedStock);
+        assert(spell.last.missCondition == miss && !spell.last.damage);
+    }
+    spell = Spell{}; target.tarnishedMiss = SPELL_MISS_NONE;
+    spell.resume(target, &source, &defender, nullptr);
+    assert(spell.last.damage == 120 && spell.last.tarnishedStock && !spell.holds);
+    spell = Spell{}; Tarnished::Answer block;
+    block.outcome = 3; block.taken = 60; block.absorbed = 40;
+    spell.resume(target, &source, &defender, &block);
+    assert(spell.last.damage == 60 && spell.last.tarnishedBlock == 40 && !spell.holds);
+    spell = Spell{}; block.taken = 0; block.absorbed = 100;
+    spell.resume(target, &source, &defender, &block);
+    assert(!spell.last.damage && spell.last.tarnishedBlock == 100 && !spell.holds);
+    spell = Spell{}; spell.resume(target, nullptr, &defender, nullptr);
+    assert(!spell.holds && !spell.applications);
+    spell = Spell{}; defender.alive = false;
+    spell.resume(target, &source, &defender, nullptr);
+    assert(!spell.holds && !spell.applications);
+}
+"""
+        code = "#include <initializer_list>\n" + code
+        source = self.scratch / "spell.cpp"
+        binary = self.scratch / "spell"
         source.write_text(code)
         subprocess.run(["g++", "-std=c++14", "-Wall", "-Wextra", "-Werror",
                         str(source), "-o", str(binary)], check=True)

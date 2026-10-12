@@ -23,13 +23,23 @@ fully offline against a local server.
 
 ## What you need
 
-### Tarnished combat (experimental, not playable yet)
+### Tarnished combat (experimental)
 
 `benilla-tarnished` contains weapon mapping, swept contacts and defender policy. Its optional
 `er-data` adapter drives the pure simulation pinned at
-`177a3b5ec14a9bde39b9ab458a3400b4038224e3`. The app and vmangos do **not** yet activate
-Tarnished combat; enabling that Cargo feature alone does not add controller combat or damage.
-There has been no live two-client combat verification.
+`177a3b5ec14a9bde39b9ab458a3400b4038224e3`. Build the launcher with `--features er-data`
+and use the patched vmangos server. F8 (pad Start) opts a living, unmounted warrior with a
+one-handed sword and shield into the stance; skating and ordinary movement cannot own the pad
+at the same time. RB attacks, RT charges a heavy attack, LB holds guard, and tapping B rolls
+while holding B sprints. Keyboard equivalents are U, I, O and Space. F9 (R3) locks the selected
+attackable target; removal, death, range or occlusion clears the lock.
+
+The attacker owns swept contacts; the defender answers server-correlated hits in iframe,
+passive dodge/parry, held front guard, hit order. NPC and stock clients retain native defence.
+The generated table supplies timing, stamina and root/blade motion; presentation currently uses
+WoW animation clips, not ER skeletal or sound assets. Stock incoming stamina is normalized onto
+the reference sword and the pinned dummy's damage/stamina ratio. This is a fork policy, not an
+extracted WoW or ER rule. There has been no supervised live two-client combat verification.
 
 Generate the action table from your own ELDEN RING files with `python3 setup/tarnished.py`;
 see [INSTALL.md](INSTALL.md#tarnished-action-table). No ELDEN RING data is distributed.

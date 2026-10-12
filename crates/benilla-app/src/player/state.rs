@@ -503,6 +503,14 @@ impl Player {
             && self.foreign_mover.is_none()
     }
 
+    pub(crate) fn may_tarnish(&self) -> bool {
+        self.may_skate()
+            && !self.modes.rooted
+            && !self.modes.levitating
+            && !self.swimming
+            && self.riding().is_none()
+    }
+
     /// A player whose last streamed movement word is `flags`, for the gates that read it.
     #[cfg(test)]
     pub(crate) fn with_move_flags(flags: u32) -> Self {
