@@ -61,8 +61,25 @@ complete. In particular, the eight-unit probe exposes differences in these inter
   spawn; upstream code assuming one entry needs semantic adaptation, not just field renames.
 - Quest, inventory, auction and item classification. CMaNGOS's additional consumable subclasses
   are not populated by vmangos's vanilla item table and need an actual classification adapter.
-- Area-name overrides and bounded height queries moved out of inline headers still need vmangos
-  implementations; they must not be replaced with dummy successful answers.
+- Autonomous navigation: CMaNGOS builds routes without a player object and annotates navigation
+  areas. vmangos PathInfo requires a Unit and uses different terrain flags. These need real
+  pathfinding adaptations before bots can plan independent travel.
+
+The adapted quest action uses vmangos's typed quest-acceptance handler, preserving server
+validation. Auction item qualifiers read the actual auction item's random properties and
+enchantments. Spawn filtering includes every entry in vmangos's random-spawn array. WMO area
+names are loaded from the existing vanilla DBC, and bounded height queries reject terrain or
+collision surfaces outside the requested vertical range. These adaptations do not establish
+working bot runtime behavior.
+
+The WMO layout has an asset-free binary fixture test using the configured core compiler:
+
+```bash
+python3 setup/playerbots/test_dbc.py .setup/playerbots-build
+```
+
+It exercises the actual patched DBC loader, record layout, signed group ID, and localized
+strings. It does not need or include extracted game data.
 
 The lifecycle hooks found in the reference core also need porting and testing: world startup
 and updates, player/session creation and teardown, packet observation, group/chat handling,

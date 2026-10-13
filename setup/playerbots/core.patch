@@ -12,6 +12,32 @@ index 782d53c..524a03b 100644
 +if(BUILD_PLAYERBOTS)
 +  include(AutonomousBots/vmangos.cmake)
 +endif()
+diff --git a/src/game/Database/DBCStructure.h b/src/game/Database/DBCStructure.h
+index 1033315..0feca8e 100644
+--- a/src/game/Database/DBCStructure.h
++++ b/src/game/Database/DBCStructure.h
+@@ -730,7 +730,7 @@ struct WMOAreaTableEntry
+     //uint32 field8;                                        // 8        m_IntroSound
+     uint32 Flags;                                           // 9        m_flags (used for indoor/outdoor determination)
+     uint32 areaId;                                          // 10       m_AreaTableID (AreaTable.dbc)
+-    //char *Name[8];                                        //          m_AreaName_lang
++    char *Name[8];                                        //          m_AreaName_lang
+     //uint32 nameFlags;
+ };
+ 
+diff --git a/src/game/Database/DBCfmt.h b/src/game/Database/DBCfmt.h
+index d472bc9..e5e7de3 100644
+--- a/src/game/Database/DBCfmt.h
++++ b/src/game/Database/DBCfmt.h
+@@ -83,7 +83,7 @@ char const TalentTabEntryfmt[]="nxxxxxxxxxxxiix";
+ char const TaxiNodesEntryfmt[]="nifffssssssssxii";
+ char const TaxiPathEntryfmt[]="niii";
+ char const TaxiPathNodeEntryfmt[]="diiifffii";
+-char const WMOAreaTableEntryfmt[]="niiixxxxxiixxxxxxxxx";
++char const WMOAreaTableEntryfmt[]="niiixxxxxiissssssssx";
+ char const WorldMapAreaEntryfmt[]="xinxffff";
+ char const TransportAnimationfmt[]="diifffx";
+ //char const WorldMapOverlayEntryfmt[]="nxiiiixxxxxxxxxxx";
 diff --git a/src/game/Movement/TargetedMovementGenerator.h b/src/game/Movement/TargetedMovementGenerator.h
 index af95b28..5472414 100644
 --- a/src/game/Movement/TargetedMovementGenerator.h
