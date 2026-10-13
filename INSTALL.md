@@ -63,6 +63,18 @@ Combat verification must be supervised with GM mode off; do not run an unattende
 Use ordinary (`--gm 0`) separate accounts. The server build command above requires Linux/Bash;
 Windows setup's stock server cannot enable Tarnished combat.
 
+For a supervised combat timing check, set `WOW_MOVE_TRACE` to a log path and
+`WOW_MOVE_TRACE_TAGS=tarnished,fct` before starting the client. The `tarnished` contact
+line records the attack's current animation frame, extracted active window (`from`/`to`),
+and total duration, in 30-fps frames. The `fct` receipt line records the server-confirmed
+damage; Tarnished feedback displays at that receipt without waiting for a stock WoW swing.
+Tap R1 and R2 separately, then repeat while taking damage: neither attack should require
+holding the button through recovery, and ordinary damage should not interrupt it.
+Also check R3 with no selection, a friendly selection, and a valid enemy selection; press
+again to unlock. Enter the stance with weapons stowed and try the sheath toggle while idle.
+After rebuilding the patched server, check both red hostile and yellow neutral creatures,
+with friendly and out-of-range targets as rejection controls.
+
 You need:
 
 | | Where it comes from |

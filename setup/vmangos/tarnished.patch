@@ -790,7 +790,7 @@ new file mode 100644
 +    {
 +        return source && target && source != target && source->IsInWorld() && target->IsInWorld() &&
 +            (source->IsAlive() || !melee) && target->IsAlive() && source->GetMap() == target->GetMap() &&
-+            source->CanAttack(target) && source->IsWithinLOSInMap(target) &&
++            source->CanAttack(target, melee && source->IsPlayer() && target->IsCreature()) && source->IsWithinLOSInMap(target) &&
 +            (!melee || source->IsWithinDistInMap(target, 8.f)) &&
 +            !(target->IsCreature() && target->ToCreature()->IsInEvadeMode());
 +    }

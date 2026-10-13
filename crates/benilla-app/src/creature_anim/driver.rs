@@ -277,13 +277,15 @@ pub(super) fn drive_animations(
         // Read for `DO_NOT_PLAY_WOUND_ANIM`; a missing cache reads as an unreceived template.
         Option<Res<crate::names::NameCache>>,
         MessageReader<BaseAnimRecompute>,
+        Option<Res<crate::tarnished::Drive>>,
+        Query<(), With<crate::tarnished::replication::ReplicatedTarnished>>,
     ),
     // The variation roll's LCG, the reference's single CRT `_rand` stream shared by every play.
     mut rng: ResMut<benilla_assets::AnimRng>,
     // The last anim trace line per traced unit; the trace writes only on change.
     mut anim_trace_last: Local<std::collections::HashMap<Entity, String>>,
 ) {
-    let (emote_sounds, loot_kneel, time, names, mut recomputes) = aux;
+    let (emote_sounds, loot_kneel, time, names, mut recomputes, tarnished, remote_tarnished) = aux;
     let dt = time.delta_secs();
     // This frame's one-shot plays per unit, replayed in the reference's call order (`PlaySeq`
     // stamps): a later call overwrites an earlier, and the combat fast path keys on what is playing
@@ -610,6 +612,8 @@ pub(super) fn drive_animations(
         // byte whenever it changes (`0x604c70`). Every SetSheatheState (`0x611cf0`) snaps except
         // the manual toggle's ceremony, which carries the draw/stow sound.
         let sheath_frame_start = drv.sheath_cur;
+        let tarnished = (is_self && tarnished.as_ref().is_some_and(|drive| drive.active))
+            || remote_tarnished.contains(entity);
         let sheath_byte = store.and_then(|s| s.0.unit_sheath_state()).unwrap_or(0);
         if drv.sheath_cur.is_none() || drv.sheath_byte != Some(sheath_byte) {
             drv.sheath_cur = Some(sheath_byte);
@@ -618,7 +622,24 @@ pub(super) fn drive_animations(
         // The setter: a no-op when unchanged (`newState == CUR`), else commit, volunteer
         // `CMSG_SETSHEATHED` for the local player, and for the manual toggle play the ceremony,
         // per-arm masked overlays (`0x60b770`) by each item's stow family (hip 90, back 89).
-        if let Some(req) = pending_sheath.get(&entity) {
+        // Tarnished owns the hands for the entire stance, including idle and incoming damage.
+        // Override manual stows and descriptor echoes, and cancel an in-flight draw/stow.
+        if tarnished {
+            if let Some(swap) = drv.sheath_swap.take() {
+                swap.stop(&mut player);
+                commands.entity(entity).remove::<super::VisualSheath>();
+            }
+        }
+        let stance_draw = SheathRequest {
+            entity,
+            state: 1,
+            ceremony: false,
+        };
+        if let Some(req) = if tarnished {
+            Some(&stance_draw)
+        } else {
+            pending_sheath.get(&entity)
+        } {
             let cur = drv.sheath_cur.unwrap_or(0);
             // Deviation: a mounted draw is refused at the setter, because our rider track never
             // replays the reference's per-play force-stow (`0x5fdf80`); the result is the same.
@@ -1123,10 +1144,11 @@ pub(super) fn drive_animations(
         // It runs on plays only, this frame's one-shot first: re-running it on a silent frame
         // would undo a masked stow against the base gait. A mounted unit still drawn (the byte
         // adopt bypasses the setter) forces once, as our rider track never plays.
-        if played_oneshot.is_some()
-            || hold_played.is_some()
-            || base_played
-            || (mounted && drv.sheath_cur.unwrap_or(0) != 0)
+        if !tarnished
+            && (played_oneshot.is_some()
+                || hold_played.is_some()
+                || base_played
+                || (mounted && drv.sheath_cur.unwrap_or(0) != 0))
         {
             let cur = drv.sheath_cur.unwrap_or(0);
             let anim = played_oneshot

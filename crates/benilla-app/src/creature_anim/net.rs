@@ -124,8 +124,16 @@ fn on_attacker_state(
     mut edges: MessageWriter<SwingRefusalEdge>,
     stores: Query<&mut crate::net::ObjectStore>,
     mut play_seq: ResMut<PlaySeq>,
+    tarnished: Option<Res<crate::tarnished::Drive>>,
+    remote_tarnished: Query<(), With<crate::tarnished::replication::ReplicatedTarnished>>,
 ) {
     if let SessionEvent::AttackerState(s) = ev {
+        let at_contact = (self_guid.0 == Some(s.attacker)
+            && tarnished.as_ref().is_some_and(|drive| drive.active))
+            || index
+                .0
+                .get(&s.attacker)
+                .is_some_and(|entity| remote_tarnished.contains(*entity));
         attacker_state(
             s,
             &index,
@@ -137,6 +145,7 @@ fn on_attacker_state(
             &mut edges,
             &stores,
             play_seq.next(),
+            at_contact,
         );
     }
 }
@@ -235,6 +244,8 @@ fn ai_reaction(
 /// One melee swing (`SMSG_ATTACKERSTATEUPDATE`): the attacker's swing plays now and the victim's
 /// feedback waits for the clip's attack-hit key (`0x6247d0`), except the center combat text, which
 /// the client shows at parse (`0x6255b0` → `0x629d30` → `0x703f50`).
+/// Fork exception: Tarnished packets confirm an already-reached ER contact frame, so their
+/// feedback fires at receipt and never starts or waits on another stock swing.
 fn attacker_state(
     mut s: AttackerState,
     index: &GuidIndex,
@@ -246,6 +257,7 @@ fn attacker_state(
     edges: &mut MessageWriter<SwingRefusalEdge>,
     stores: &Query<&mut crate::net::ObjectStore>,
     seq: u64,
+    at_contact: bool,
 ) {
     let victim = index.0.get(&s.victim).copied();
     // Our landed swing clears the refusal latch (`0x6259b6` → `0x5ea800` → `0x5ecdb0(0)`) when we
@@ -302,10 +314,22 @@ fn attacker_state(
             state: 1,
             ceremony: false,
         });
-        swings.write(SwingMessage {
+        let swing = SwingMessage {
             attacker: e,
             ..swing
-        });
+        };
+        if at_contact {
+            // The ER active-frame blade contact already happened. A second WoW swing would
+            // delay damage text, blood and audio until its unrelated impact keyframe.
+            impacts.write(SwingImpact {
+                swing,
+                text_only: false,
+                natural: None,
+                pos: None,
+            });
+        } else {
+            swings.write(swing);
+        }
     } else if swing.victim.is_some_and(|v| {
         // The unresolved-attacker leg (`0x625823` → `0x625a3e`) calls the gated dispatcher
         // (`0x625a6d` → `0x624530`), so the lootable gate applies here too.
@@ -402,6 +426,68 @@ fn mount_special(
     if self_guid.0 != Some(guid) {
         if let Some(&e) = index.0.get(&guid) {
             out.write(MountFlourish { unit: e });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tarnished_tests {
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    #[test]
+    fn tarnished_confirmed_damage_fires_without_a_second_swing_animation() {
+        for (active, remote) in [(true, false), (false, true), (false, false)] {
+            let mut world = World::new();
+            let attacker = world.spawn_empty().id();
+            let victim = world.spawn_empty().id();
+            if remote {
+                world
+                    .entity_mut(attacker)
+                    .insert(crate::tarnished::replication::ReplicatedTarnished);
+            }
+            world.insert_resource(GuidIndex([(1, attacker), (2, victim)].into()));
+            world.insert_resource(SelfGuid(Some(1)));
+            world.insert_resource(crate::tarnished::Drive {
+                active,
+                ..Default::default()
+            });
+            world.init_resource::<PlaySeq>();
+            world.init_resource::<Messages<SwingMessage>>();
+            world.init_resource::<Messages<SwingImpact>>();
+            world.init_resource::<Messages<CombatTextEvent>>();
+            world.init_resource::<Messages<SheathRequest>>();
+            world.init_resource::<Messages<SwingRefusalEdge>>();
+            world
+                .run_system_once_with(
+                    on_attacker_state,
+                    SessionEvent::AttackerState(AttackerState {
+                        attacker: 1,
+                        victim: 2,
+                        hit_info: 2,
+                        damage: 37,
+                        victim_state: 1,
+                        absorb: 0,
+                        resist: 0,
+                        blocked: 0,
+                        melee_spell_id: 0,
+                        school: 0,
+                    }),
+                )
+                .unwrap();
+            let impacts = world.resource::<Messages<SwingImpact>>();
+            let mut cursor = impacts.get_cursor();
+            let hits: Vec<_> = cursor.read(impacts).collect();
+            if active || remote {
+                assert_eq!(hits.len(), 1);
+                assert_eq!(hits[0].swing.damage, 37);
+                assert_eq!(hits[0].swing.victim, Some(victim));
+                assert!(!hits[0].text_only);
+                assert!(world.resource::<Messages<SwingMessage>>().is_empty());
+            } else {
+                assert!(hits.is_empty());
+                assert_eq!(world.resource::<Messages<SwingMessage>>().len(), 1);
+            }
         }
     }
 }

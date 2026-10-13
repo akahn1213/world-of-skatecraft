@@ -103,6 +103,18 @@ pub trait Backend: Send + Sync {
     fn set_grounded(&mut self, _grounded: bool) {}
     /// Feedback for a fresh contact batch; the host owns per-target contact accounting.
     fn contact(&mut self) {}
+    /// Extracted 30-fps animation frames for diagnosing contact against the visible swing.
+    fn attack_timing(&self) -> Option<AttackTiming> {
+        None
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct AttackTiming {
+    pub frame: f32,
+    pub from: f32,
+    pub to: f32,
+    pub total: f32,
 }
 
 #[derive(Clone, Debug)]

@@ -47,6 +47,65 @@ class TarnishedServerTests(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.scratch)
 
+    def test_actual_cpp_allowed_accepts_neutral_creatures_but_preserves_restrictions(self):
+        cpp = added_file("src/game/Tarnished.cpp")
+        code = r"""
+#include <cassert>
+struct Unit {
+    bool player = false, creature = true, hostile = true, friendly = false;
+    bool world = true, alive = true, los = true, range = true, evade = false;
+    bool targetable = true, detectable = true;
+    int map = 1;
+    bool IsPlayer() const { return player; }
+    bool IsCreature() const { return creature; }
+    Unit const* ToCreature() const { return this; }
+    bool IsInEvadeMode() const { return evade; }
+    bool IsInWorld() const { return world; }
+    bool IsAlive() const { return alive; }
+    int GetMap() const { return map; }
+    bool IsWithinLOSInMap(Unit const* target) const { return target->los; }
+    bool IsWithinDistInMap(Unit const* target, float) const { return target->range; }
+    // Pinned Unit::CanAttack: force permits nonfriendly player-initiated attacks,
+    // then still checks IsTargetableBy and invisibility detection.
+    bool CanAttack(Unit const* target, bool force = false) const {
+        return !target->friendly && (target->hostile || (force && player)) &&
+            target->targetable && target->detectable;
+    }
+};
+"""
+        code += definition(cpp, "static bool Allowed")
+        code += r"""
+int main() {
+    Unit source; source.player = true; source.creature = false;
+    Unit target;
+    assert(Allowed(&source, &target, true));
+    target.hostile = false;
+    assert(Allowed(&source, &target, true));
+    assert(!Allowed(&source, &target, false)); // leave unrelated spell policy unchanged
+    target.friendly = true; assert(!Allowed(&source, &target, true)); target.friendly = false;
+    target.creature = false; target.player = true;
+    assert(!Allowed(&source, &target, true)); // no broadened player-vs-player permission
+    target = Unit{};
+    assert(!Allowed(nullptr, &target, true));
+    assert(!Allowed(&source, nullptr, true));
+    assert(!Allowed(&source, &source, true));
+    for (bool Unit::* field : {&Unit::world, &Unit::alive, &Unit::los, &Unit::range,
+                               &Unit::targetable, &Unit::detectable}) {
+        target.*field = false; assert(!Allowed(&source, &target, true)); target.*field = true;
+    }
+    target.evade = true; assert(!Allowed(&source, &target, true)); target.evade = false;
+    target.map = 2; assert(!Allowed(&source, &target, true)); target.map = 1;
+    source.alive = false; assert(!Allowed(&source, &target, true)); source.alive = true;
+    source.world = false; assert(!Allowed(&source, &target, true));
+}
+"""
+        source = self.scratch / "allowed.cpp"
+        binary = self.scratch / "allowed"
+        source.write_text("#include <initializer_list>\n" + code)
+        subprocess.run(["g++", "-std=c++14", "-Wall", "-Wextra", "-Werror",
+                        str(source), "-o", str(binary)], check=True)
+        subprocess.run([str(binary)], check=True)
+
     def test_actual_cpp_contact_batches_do_not_multiply_swing_damage(self):
         cpp = added_file("src/game/Tarnished.cpp")
         header = added_file("src/game/Tarnished.h")

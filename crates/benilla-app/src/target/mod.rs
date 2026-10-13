@@ -67,7 +67,7 @@ pub(crate) use relations::{
 };
 // The attack validator's target half, run in the call that asks, for the player's Attack and the
 // pet bar's; the melee probe's press with nothing selected.
-pub(crate) use scan::{AttackNearestRequest, AttackPick};
+pub(crate) use scan::{AttackNearestRequest, AttackPick, CombatSelect};
 // The chat layer's by-name asks (`/target`, `/assist`).
 pub(crate) use by_name::{AssistRequest, TargetByNameRequest};
 // The reaction decode and its faction catalog, which also tint the target frame

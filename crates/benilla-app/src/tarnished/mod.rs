@@ -198,7 +198,7 @@ fn tick(
         Res<GuidIndex>,
         Res<crate::items::Items>,
         crate::target::ReactionInputs,
-        Res<crate::target::Selection>,
+        crate::target::CombatSelect,
         Res<crate::loading_screen::LoadingScreen>,
     ),
     mut state: (ResMut<Host>, ResMut<Drive>, ResMut<replication::Link>),
@@ -207,7 +207,7 @@ fn tick(
     let (keys, mouse, motion) = input_sources;
     let (host, drive, link) = (&mut *state.0, &mut *state.1, &mut *state.2);
     link.discover(time.elapsed_secs_f64(), &net);
-    let (self_guid, index, items, reactions, selection, loading) = context;
+    let (self_guid, index, items, reactions, mut selection, loading) = context;
     let self_object = self_guid
         .0
         .and_then(|guid| index.0.get(&guid))
@@ -269,40 +269,43 @@ fn tick(
     let Some((self_id, _, self_store, _)) = self_object else {
         return;
     };
+    let lock_candidate = |guid| {
+        index
+            .0
+            .get(&guid)
+            .and_then(|entity| objects.get(*entity).ok())
+            .filter(|(guid, transform, store, _)| {
+                guid.0 != self_id.0
+                    && !store.0.unit_is_dead()
+                    && drive.position.distance(transform.translation) < 25.0 / 0.9144
+                    && crate::target::can_attack(
+                        Some(store),
+                        reactions.factions.as_deref(),
+                        &reactions.reputations,
+                        Some(self_store),
+                    )
+                    && collision
+                        .ray_body(
+                            drive.position + Vec3::Y,
+                            Dir3::new(transform.translation - drive.position)
+                                .unwrap_or(Dir3::NEG_Z),
+                            drive.position.distance(transform.translation),
+                        )
+                        .is_none()
+            })
+    };
     let lock_pressed = keys.just_pressed(KeyCode::F9) || pressed & 0x0080 != 0;
     if lock_pressed {
-        drive.lock = if drive.lock.is_some() {
+        drive.lock = if drive
+            .lock
+            .is_some_and(|guid| lock_candidate(guid).is_some())
+        {
             None
         } else {
-            selection.guid
+            selection.acquire(|guid| lock_candidate(guid).is_some())
         };
     }
-    let locked = drive
-        .lock
-        .and_then(|guid| {
-            index
-                .0
-                .get(&guid)
-                .and_then(|entity| objects.get(*entity).ok())
-        })
-        .filter(|(guid, transform, store, _)| {
-            guid.0 != self_id.0
-                && !store.0.unit_is_dead()
-                && drive.position.distance(transform.translation) < 25.0 / 0.9144
-                && crate::target::can_attack(
-                    Some(store),
-                    reactions.factions.as_deref(),
-                    &reactions.reputations,
-                    Some(self_store),
-                )
-                && collision
-                    .ray_body(
-                        drive.position + Vec3::Y,
-                        Dir3::new(transform.translation - drive.position).unwrap_or(Dir3::NEG_Z),
-                        drive.position.distance(transform.translation),
-                    )
-                    .is_none()
-        });
+    let locked = drive.lock.and_then(lock_candidate);
     if locked.is_none() {
         drive.lock = None;
     }
@@ -570,6 +573,22 @@ fn tick(
             if let Some(verdict) =
                 combat.attack(&**backend, time.elapsed().as_millis() as u32, targets)
             {
+                if benilla_assets::trace::enabled() {
+                    benilla_assets::trace::line(
+                        "tarnished",
+                        &format!(
+                            "contact attack={} kind={} timing={:?} targets={:?}",
+                            verdict.attack_id,
+                            verdict.attack_kind,
+                            backend.attack_timing(),
+                            verdict
+                                .targets
+                                .iter()
+                                .map(|hit| hit.guid)
+                                .collect::<Vec<_>>()
+                        ),
+                    );
+                }
                 backend.contact();
                 send(Packet::Attack(verdict), &net);
             }

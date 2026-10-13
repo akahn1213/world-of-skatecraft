@@ -51,7 +51,11 @@ fn main() {
             .replace("bevy::math::", "glam::")
             .replace(
                 "pub mod extracted;",
-                &format!("#[path = {:?}]\npub mod extracted;", generated),
+                // Sampled coordinates are measurements, not approximations of math constants.
+                &format!(
+                    "#[allow(clippy::approx_constant)]\n#[path = {:?}]\npub mod extracted;",
+                    generated
+                ),
             )
             .replace(
                 "mod tests;",

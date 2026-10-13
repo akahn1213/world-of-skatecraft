@@ -46,6 +46,13 @@ pub(super) struct SheathSwap {
 }
 
 impl SheathSwap {
+    /// A mode which owns the weapon pose must retire any pending stock draw/stow overlays.
+    pub(super) fn stop(self, player: &mut AnimationPlayer) {
+        for arm in self.arms.into_iter().flatten() {
+            player.stop(arm.node);
+        }
+    }
+
     /// The state one arm shows: its leg's side of the swap, or `cur` with no leg.
     fn arm_state(&self, arm: usize, cur: u8) -> u8 {
         match &self.arms[arm] {

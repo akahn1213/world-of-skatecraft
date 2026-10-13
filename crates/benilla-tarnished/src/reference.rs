@@ -164,6 +164,26 @@ impl Backend for ReferenceBackend {
         })
     }
 
+    fn attack_timing(&self) -> Option<crate::AttackTiming> {
+        let (id, frame) = self.action()?;
+        let def = id.def();
+        let (from, to) = if let Some(air) = self.player.air_attack {
+            (air.def.from, air.def.to)
+        } else {
+            let hit = def
+                .hits
+                .iter()
+                .find(|hit| frame >= hit.from && frame < hit.to)?;
+            (hit.from, hit.to)
+        };
+        Some(crate::AttackTiming {
+            frame,
+            from,
+            to,
+            total: def.total,
+        })
+    }
+
     fn active_motion_value(&self) -> Option<f32> {
         self.player.active_hit().map(|hit| hit.mv)
     }
@@ -247,8 +267,9 @@ impl Backend for ReferenceBackend {
         source: [f32; 3],
     ) {
         use benilla_protocol::tarnished::DefenceOutcome as O;
-        if matches!(outcome, O::Hit { .. } | O::Block { .. }) {
-            // WoW owns HP. A zero-HP-damage incoming still produces the reference hurt/guard action.
+        if matches!(outcome, O::Block { .. }) {
+            // Fork policy: ordinary damage never interrupts an attack or movement. WoW owns HP;
+            // only an actual block invokes the reference guard reaction and stamina/guard break.
             self.receive_hit(0.0, stamina_damage, Vec3::from_array(source));
         }
     }
@@ -325,6 +346,99 @@ mod tests {
         assert!(backend.guard(20.0, 1.0).is_some());
         backend.step(BackendInput::default());
         assert!(backend.guard(20.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn ordinary_damage_does_not_interrupt_light_or_heavy_attacks() {
+        use benilla_protocol::tarnished::DefenceOutcome;
+        for heavy in [false, true] {
+            let mut backend = ReferenceBackend::sword_and_shield();
+            backend.step(BackendInput {
+                light_attack: !heavy,
+                heavy_attack: heavy,
+                ..Default::default()
+            });
+            let action = backend.action().expect("attack started");
+            assert!(matches!(action.0, data::ActionId::Attack(..)));
+            let stamina = backend.stamina();
+            backend.react(DefenceOutcome::Hit { taken: 50 }, 20.0, [0.0, 0.0, 1.0]);
+            assert_eq!(
+                backend.action(),
+                Some(action),
+                "an incoming hit must not replace the swing with Hurt"
+            );
+            assert_eq!(backend.stamina(), stamina);
+            backend.step(BackendInput::default());
+            assert!(
+                matches!(backend.player.state, State::Act(a) if matches!(a.id, data::ActionId::Attack(..)))
+            );
+        }
+    }
+
+    #[test]
+    fn single_button_press_exposes_contact_during_extracted_active_frames() {
+        for heavy in [false, true] {
+            let mut backend = ReferenceBackend::sword_and_shield();
+            backend.step(BackendInput {
+                light_attack: !heavy,
+                heavy_attack: heavy,
+                ..Default::default()
+            });
+            let mut contacted = false;
+            for _ in 0..600 {
+                // Release immediately: damage must never require holding through the recovery.
+                backend.step(BackendInput::default());
+                if backend.active_swing().is_some() {
+                    let timing = backend.attack_timing().unwrap();
+                    assert!(timing.frame >= timing.from && timing.frame < timing.to);
+                    assert!(
+                        timing.frame < timing.total,
+                        "contact happens before animation completion"
+                    );
+                    assert!(
+                        timing.frame - timing.from <= data::DF,
+                        "first active simulation tick"
+                    );
+                    contacted = true;
+                    break;
+                }
+            }
+            assert!(contacted, "a tapped attack must reach its hit window");
+        }
+    }
+
+    #[test]
+    fn blocking_still_spends_stamina_and_breaks_an_exhausted_guard() {
+        use benilla_protocol::tarnished::DefenceOutcome;
+        for broken in [false, true] {
+            let mut backend = ReferenceBackend::sword_and_shield();
+            for _ in 0..60 {
+                backend.step(BackendInput {
+                    guard: true,
+                    ..Default::default()
+                });
+            }
+            backend.player.stamina = if broken { 1.0 } else { 100.0 };
+            backend.react(
+                DefenceOutcome::Block {
+                    absorbed: 50,
+                    stamina_cost: 11,
+                    guard_broken: broken,
+                    taken: 0,
+                },
+                20.0,
+                [0.0, 0.0, 1.0],
+            );
+            assert_eq!(backend.stamina(), if broken { 0.0 } else { 89.0 });
+            assert_eq!(
+                backend.action().unwrap().0,
+                if broken {
+                    data::ActionId::GuardBreak
+                } else {
+                    data::ActionId::GuardHit
+                }
+            );
+        }
     }
 
     #[test]

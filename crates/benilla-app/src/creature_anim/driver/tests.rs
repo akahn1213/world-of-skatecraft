@@ -3978,3 +3978,74 @@ mod base_anim_lock {
         );
     }
 }
+
+#[test]
+fn tarnished_stance_keeps_melee_drawn_through_stow_requests_and_casts() {
+    let mut app = app();
+    app.insert_resource(crate::tarnished::Drive {
+        active: true,
+        ..Default::default()
+    });
+    let (tx, rx) = crossbeam_channel::unbounded();
+    app.insert_resource(NetCommands(tx));
+    let unit = app
+        .world_mut()
+        .spawn((
+            caster_model(),
+            AnimationPlayer::default(),
+            AnimationTransitions::new(),
+            AnimDriver::default(),
+            crate::net::SelfPlayer,
+            crate::net::ObjectStore(ObjectFields::from_pairs(&[(164, 0)])),
+        ))
+        .id();
+    app.update();
+    assert_eq!(
+        app.world().get::<AnimDriver>(unit).unwrap().sheath_state(),
+        Some(1)
+    );
+    assert_eq!(
+        rx.try_iter()
+            .filter(|c| matches!(c, crate::net::ClientCommand::SetSheathed { state: 1 }))
+            .count(),
+        1
+    );
+    // A manual stow and a stock casting animation must not hide the stance's weapons.
+    app.world_mut().write_message(SheathRequest {
+        entity: unit,
+        state: 0,
+        ceremony: true,
+    });
+    app.world_mut().entity_mut(unit).insert(CastHold {
+        ranged: false,
+        anim_id: 51,
+        spell_id: 20793,
+    });
+    app.update();
+    assert_eq!(
+        app.world().get::<AnimDriver>(unit).unwrap().sheath_state(),
+        Some(1)
+    );
+    assert!(!app
+        .world()
+        .get::<AnimDriver>(unit)
+        .unwrap()
+        .sheath_ceremony_active());
+    assert!(
+        rx.try_iter().next().is_none(),
+        "no duplicate network request while already drawn"
+    );
+    app.world_mut()
+        .resource_mut::<crate::tarnished::Drive>()
+        .active = false;
+    app.world_mut().write_message(SheathRequest {
+        entity: unit,
+        state: 0,
+        ceremony: false,
+    });
+    app.update();
+    assert_eq!(
+        app.world().get::<AnimDriver>(unit).unwrap().sheath_state(),
+        Some(0)
+    );
+}

@@ -400,6 +400,47 @@ impl TargetScan<'_, '_> {
     }
 }
 
+/// Tarnished acquisition shares TAB's eligibility and priority, but never starts autoattack.
+#[derive(SystemParam)]
+pub(crate) struct CombatSelect<'w, 's> {
+    scan: TargetScan<'w, 's>,
+    selection: ResMut<'w, Selection>,
+    seam: crate::creature_anim::AttackSeam<'w, 's>,
+}
+
+impl CombatSelect<'_, '_> {
+    pub(crate) fn acquire(&mut self, mut eligible: impl FnMut(u64) -> bool) -> Option<u64> {
+        if let Some(guid) = self.selection.guid.filter(|guid| eligible(*guid)) {
+            return Some(guid);
+        }
+        let candidates: Vec<_> = self
+            .scan
+            .build(ScanSide::Enemy)
+            .into_iter()
+            .filter(|candidate| {
+                eligible(candidate.guid)
+                    && super::relations::is_selectable(
+                        self.scan.store_at(candidate.entity),
+                        self.scan.self_guid(),
+                    )
+            })
+            .collect();
+        let pool = select_pool(&candidates);
+        let candidate = pool.first()?;
+        commit(
+            &mut self.selection,
+            &mut self.seam,
+            candidate.entity,
+            candidate.guid,
+            self.scan.store_at(candidate.entity),
+            false,
+            self.scan.self_guid(),
+            true,
+        );
+        Some(candidate.guid)
+    }
+}
+
 /// Recently picked guids, skipped by the forward pick: the stand-in for 1.12's snapshot cursor.
 #[derive(Resource, Default)]
 pub(super) struct TabHistory {
@@ -1206,6 +1247,73 @@ mod tests {
 
     fn store(pairs: &[(u16, u32)]) -> ObjectStore {
         ObjectStore(benilla_protocol::ObjectFields::from_pairs(pairs))
+    }
+
+    #[test]
+    fn tarnished_acquires_a_tab_candidate_and_commits_without_autoattack() {
+        use bevy::ecs::system::RunSystemOnce;
+        let (mut world, rx) = commit_world();
+        world.init_resource::<Reputations>();
+        world.init_resource::<NameCache>();
+        let me = world
+            .query_filtered::<Entity, With<SelfPlayer>>()
+            .single(&world)
+            .unwrap();
+        world.entity_mut(me).insert((
+            Transform::default(),
+            Guid(1),
+            store(&[
+                (F_TYPE, TYPE_PLAYER),
+                (F_FLAGS, CONTROLLED),
+                (F_HEALTH, 100),
+                (F_MAXHEALTH, 100),
+            ]),
+        ));
+        for (guid, x, hp) in [(2, 2.0, 100), (3, 5.0, 100), (4, 1.0, 0)] {
+            world.spawn((
+                NetEntity {
+                    kind: EntityKind::Unit,
+                    display_id: None,
+                    scale: 1.0,
+                },
+                Guid(guid),
+                Transform::from_xyz(x, 0.0, 0.0),
+                store(&[(F_HEALTH, hp), (F_MAXHEALTH, 100)]),
+            ));
+        }
+        // GUID 2 represents an occluded target: filter before choosing the TAB-priority winner.
+        let pick = world
+            .run_system_once(|mut select: CombatSelect| select.acquire(|g| g != 2))
+            .unwrap();
+        assert_eq!(pick, Some(3));
+        assert_eq!(world.resource::<Selection>().guid, Some(3));
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            ClientCommand::SetSelection { guid: 3 }
+        ));
+        assert!(
+            rx.try_recv().is_err(),
+            "acquiring must not send a stock attack"
+        );
+        // A valid manual selection wins over the nearer candidate; no duplicate selection send.
+        assert_eq!(
+            world
+                .run_system_once(|mut select: CombatSelect| select.acquire(|_| true))
+                .unwrap(),
+            Some(3)
+        );
+        assert!(rx.try_recv().is_err());
+        assert_eq!(
+            world
+                .run_system_once(|mut select: CombatSelect| select.acquire(|_| false))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            world.resource::<Selection>().guid,
+            Some(3),
+            "no candidates preserves selection"
+        );
     }
 
     /// With no `FactionTemplate.dbc` every reaction is neutral: attackable (`CanAttack`'s mixed
