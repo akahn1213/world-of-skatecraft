@@ -52,19 +52,30 @@ index af95b28..5472414 100644
          void UnitSpeedChanged() override { m_bRecalculateTravel=true; }
          void UpdateFinalDistance(float fDistance) override;
 diff --git a/src/game/Objects/Player.h b/src/game/Objects/Player.h
-index 5341e96..cb301b3 100644
+index 5341e96..447c1a2 100644
 --- a/src/game/Objects/Player.h
 +++ b/src/game/Objects/Player.h
-@@ -63,6 +63,8 @@ class Spell;
+@@ -63,6 +63,9 @@ class Spell;
  class Item;
  class ZoneScript;
  class PlayerAI;
 +class PlayerbotAI;
++class PlayerbotFactory;
 +class PlayerbotMgr;
  class PlayerBroadcaster;
  class BattleGround;
  
-@@ -1414,9 +1416,9 @@ class Player final: public Unit
+@@ -749,6 +752,9 @@ struct QuestShareInfo
+ class Player final: public Unit
+ {
+     friend class WorldSession;
++#ifdef ENABLE_PLAYERBOTS
++    friend class PlayerbotFactory;
++#endif
+     friend void Item::AddToUpdateQueueOf(Player* player);
+     friend void Item::RemoveFromUpdateQueueOf(Player* player);
+     public:
+@@ -1414,9 +1420,9 @@ class Player final: public Unit
          void UpdateFreeTalentPoints(bool resetIfNeed = true);
          uint32 GetResetTalentsCost() const;
          void UpdateResetTalentsMultiplier() const;
@@ -75,7 +86,7 @@ index 5341e96..cb301b3 100644
          uint32 GetFreeTalentPoints() const { return GetUInt32Value(PLAYER_CHARACTER_POINTS1); }
          void SetFreeTalentPoints(uint32 points) { SetUInt32Value(PLAYER_CHARACTER_POINTS1, points); }
          bool ResetTalents(bool noCost = false);
-@@ -1961,6 +1963,15 @@ class Player final: public Unit
+@@ -1961,6 +1967,15 @@ class Player final: public Unit
  
          // PlayerAI management
          PlayerAI* m_AI;

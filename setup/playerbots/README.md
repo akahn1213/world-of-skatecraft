@@ -72,6 +72,13 @@ names are loaded from the existing vanilla DBC, and bounded height queries rejec
 collision surfaces outside the requested vertical range. These adaptations do not establish
 working bot runtime behavior.
 
+Character provisioning reads vmangos's creature and item maps, pet spell list, skill
+race/class records, and taxi-node store. Class spell provisioning uses vmangos trainer
+eligibility checks and casts the trainer's teaching spell, including its learning effects.
+The factory has scoped access to Player's private initialization helpers in the bot build.
+Queued bot requests use `WorldSession::QueueBinaryPacket` so vmangos parses them into its
+native packet types. This does not yet provide bot session ownership or update scheduling.
+
 The WMO layout has an asset-free binary fixture test using the configured core compiler:
 
 ```bash
