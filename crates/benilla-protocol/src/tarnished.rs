@@ -29,7 +29,7 @@ pub const HELLO: [u8; 2] = [1, 0];
 /// The capability version this build speaks. The discovery handshake is independent of skating's:
 /// a server that relays skating need not relay Tarnished combat, and an older peer that knows
 /// neither is undisturbed.
-pub const VERSION: u8 = 3;
+pub const VERSION: u8 = 4;
 
 fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid tarnished payload")
@@ -573,6 +573,17 @@ pub enum Relay {
     },
     /// A hit aimed at us to resolve.
     Incoming(Incoming),
+    /// Native melee: play the windup, then answer at its M2 attack-hit key.
+    Windup {
+        incoming: Incoming,
+        hit_info: u32,
+    },
+    /// Native spell/ranged impact: a travelling spell uses the visible missile arrival.
+    SpellImpact {
+        incoming: Incoming,
+        spell_id: u32,
+        projectile: bool,
+    },
 }
 
 pub fn decode_relay(body: &[u8]) -> io::Result<Relay> {
@@ -606,6 +617,34 @@ pub fn decode_relay(body: &[u8]) -> io::Result<Relay> {
                     verdict,
                 },
                 _ => return Err(invalid()),
+            }
+        }
+        tag @ (0x14 | 0x15) => {
+            let metadata = u32_(&mut r)?;
+            let projectile = if tag == 0x15 { bool_(&mut r)? } else { false };
+            if r.first() != Some(&relay_tag::INCOMING) {
+                return Err(invalid());
+            }
+            let Relay::Incoming(incoming) = decode_relay(r)? else {
+                return Err(invalid());
+            };
+            if tag == 0x14 {
+                if !incoming.melee {
+                    return Err(invalid());
+                }
+                Relay::Windup {
+                    incoming,
+                    hit_info: metadata,
+                }
+            } else {
+                if incoming.melee || metadata == 0 {
+                    return Err(invalid());
+                }
+                Relay::SpellImpact {
+                    incoming,
+                    spell_id: metadata,
+                    projectile,
+                }
             }
         }
         relay_tag::INCOMING => {
@@ -708,6 +747,60 @@ mod tests {
                 scale: [1.0; 3],
             }],
         }
+    }
+
+    #[test]
+    fn visual_contact_envelopes_preserve_tokens_and_reject_malformed_frames() {
+        for projectile in [false, true] {
+            let incoming = Incoming {
+                attack_id: 77,
+                source_guid: 99,
+                school: 2,
+                amount: 100,
+                melee: false,
+                stamina_milli: None,
+            };
+            let mut body = vec![0x15];
+            body.extend(133u32.to_le_bytes());
+            body.push(u8::from(projectile));
+            body.extend(encode_incoming(&incoming));
+            assert_eq!(
+                decode_relay(&body).unwrap(),
+                Relay::SpellImpact {
+                    incoming,
+                    spell_id: 133,
+                    projectile
+                }
+            );
+            for end in 0..body.len() {
+                assert!(decode_relay(&body[..end]).is_err());
+            }
+            body[6] = 0x15;
+            assert!(decode_relay(&body).is_err()); // no recursive envelopes
+        }
+        let incoming = Incoming {
+            attack_id: 5,
+            source_guid: 8,
+            school: 0,
+            amount: 60,
+            melee: true,
+            stamina_milli: None,
+        };
+        let mut body = vec![0x14];
+        body.extend(4u32.to_le_bytes());
+        body.extend(encode_incoming(&incoming));
+        assert_eq!(
+            decode_relay(&body).unwrap(),
+            Relay::Windup {
+                incoming,
+                hit_info: 4
+            }
+        );
+        for end in 0..body.len() {
+            assert!(decode_relay(&body[..end]).is_err());
+        }
+        body.push(0);
+        assert!(decode_relay(&body).is_err());
     }
 
     #[test]

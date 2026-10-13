@@ -17,6 +17,7 @@
 
 pub mod attack;
 pub mod defence;
+pub mod impact;
 pub mod profile;
 pub mod runtime;
 pub mod scale;

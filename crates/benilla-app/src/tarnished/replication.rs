@@ -232,6 +232,8 @@ fn packet(
     mut remotes: Query<&mut Remote>,
     mut commands: Commands,
     net: Res<NetCommands>,
+    mut windups: MessageWriter<crate::creature_anim::SwingWindup>,
+    mut sequence: ResMut<crate::creature_anim::PlaySeq>,
 ) {
     let SessionEvent::Tarnished(packet) = event else {
         return;
@@ -242,6 +244,40 @@ fn packet(
             // The server bounds pending work at 64; never let the host grow an unbounded queue.
             if host.incoming.len() < 64 {
                 host.incoming.push_back(hit);
+            }
+        }
+        Relay::Windup { incoming, hit_info } if link.acknowledged && drive.active => {
+            if host.visual_incoming.len() < 64 {
+                host.visual_incoming.push_back((
+                    benilla_tarnished::impact::Contact::Melee(incoming.source_guid),
+                    incoming,
+                ));
+                if let Some(&attacker) = index.0.get(&incoming.source_guid) {
+                    windups.write(crate::creature_anim::SwingWindup {
+                        attacker,
+                        hit_info,
+                        seq: sequence.next(),
+                    });
+                }
+            }
+        }
+        Relay::SpellImpact {
+            incoming,
+            spell_id,
+            projectile,
+        } if link.acknowledged && drive.active => {
+            if projectile {
+                if host.visual_incoming.len() < 64 {
+                    host.visual_incoming.push_back((
+                        benilla_tarnished::impact::Contact::Projectile {
+                            source: incoming.source_guid,
+                            spell: spell_id,
+                        },
+                        incoming,
+                    ));
+                }
+            } else if host.incoming.len() < 64 {
+                host.incoming.push_back(incoming);
             }
         }
         Relay::Pose { guid, pose, .. }
@@ -413,7 +449,7 @@ mod tests {
         });
         world.resource_mut::<Link>().discover(0.0, &net);
         assert!(matches!(rx.try_recv().unwrap(),
-            ClientCommand::AddonMessage { text, .. } if text == "TARNISHED\tV\t3"));
+            ClientCommand::AddonMessage { text, .. } if text == "TARNISHED\tV\t4"));
         let mut message = benilla_protocol::messages::ChatMessage {
             chat_type: benilla_protocol::messages::CHAT_MSG_PARTY,
             language: benilla_protocol::messages::LANGUAGE_ADDON,
@@ -421,7 +457,7 @@ mod tests {
             target_guid: 0,
             sender_name: None,
             channel: None,
-            text: "TARNISHED\tCAPS\t3".into(),
+            text: "TARNISHED\tCAPS\t4".into(),
             chat_tag: 0,
         };
         world
@@ -449,6 +485,8 @@ mod tests {
             ..default()
         });
         world.init_resource::<Host>();
+        world.init_resource::<Messages<crate::creature_anim::SwingWindup>>();
+        world.init_resource::<crate::creature_anim::PlaySeq>();
         world.init_resource::<Drive>();
         world.init_resource::<Time<Real>>();
         world.init_resource::<GuidIndex>();

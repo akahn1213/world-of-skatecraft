@@ -134,7 +134,8 @@ fn app() -> App {
     app.init_resource::<Time>();
     app.init_resource::<NextStep>();
     app.add_systems(bevy::app::First, step_clock);
-    app.add_message::<SwingMessage>()
+    app.add_message::<super::super::SwingWindup>()
+        .add_message::<SwingMessage>()
         .add_message::<crate::creature_anim::SwingImpact>()
         .add_message::<crate::creature_anim::DefenseAnim>()
         .add_message::<crate::creature_anim::SwingSlowdown>()

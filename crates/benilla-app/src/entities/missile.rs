@@ -338,6 +338,7 @@ pub(super) struct ArrivalOut<'w> {
     impacts: MessageWriter<'w, CastEvent>,
     defenses: MessageWriter<'w, DefenseAnim>,
     words: MessageWriter<'w, MissileMiss>,
+    contacts: MessageWriter<'w, crate::tarnished::ProjectileContact>,
 }
 
 /// The arrival hand-off, by the arms of the reference's per-tick dispatch `0x61e1d0` (module docs).
@@ -361,6 +362,13 @@ fn arrival_handoff(
             let kind = CastEventKind::Impact {
                 weapon_visual: missile.weapon_visual,
             };
+            // Fork: snapshot defence at the same arrival that owns the visible impact,
+            // including invisible/unloaded missiles and release-past-deadline arrivals.
+            out.contacts.write(crate::tarnished::ProjectileContact {
+                source: missile.caster,
+                target,
+                spell_id: missile.spell_id,
+            });
             out.impacts.write(event(target, kind));
         }
         Aim::Unit {
@@ -706,7 +714,8 @@ mod tests {
             .add_message::<MissileSound>()
             .add_message::<CastEvent>()
             .add_message::<DefenseAnim>()
-            .add_message::<MissileMiss>();
+            .add_message::<MissileMiss>()
+            .add_message::<crate::tarnished::ProjectileContact>();
         app.add_systems(Update, spawn_missiles);
         app
     }

@@ -621,8 +621,8 @@ impl Plugin for EntitiesPlugin {
                 (resolve_equipment, resolve_corpse_equipment),
                 // Spell effects and missiles create `SpellFx` entries too.
                 resolve_spell_fx,
-                move_missiles,
-                spawn_missiles,
+                move_missiles.in_set(crate::tarnished::ContactEventsSet),
+                spawn_missiles.in_set(crate::tarnished::ContactEventsSet),
                 // The dest-anchored lane's three independent producers also create entries.
                 (arm_ground_effects, spawn_ground_bursts, tick_shard_emitters),
                 update_display_models.in_set(DisplayBuildSet),

@@ -1,7 +1,9 @@
 //! Opt-in fork combat: the pinned 60 Hz reference drives intent, WoW owns terrain and health.
 
+mod incoming;
 pub(crate) mod replication;
 mod rig;
+pub(crate) use incoming::ProjectileContact;
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -9,7 +11,6 @@ use std::sync::Mutex;
 use benilla_protocol::tarnished::{Incoming, Packet};
 use benilla_tarnished::{
     attack::{resolve_swing, Body},
-    defence::{self, DefenceState},
     runtime::{Combat, InputBuffer, TICK},
     scale::{Outcome, WowWeapon},
     Backend, BackendInput,
@@ -61,6 +62,7 @@ struct Host {
     backend: Option<Box<dyn Backend>>,
     combat: Combat,
     incoming: VecDeque<Incoming>,
+    visual_incoming: VecDeque<(benilla_tarnished::impact::Contact, Incoming)>,
     vertical_speed: f32,
     grounded: bool,
     steep_support: bool,
@@ -100,10 +102,14 @@ pub(crate) struct TarnishedPlugin;
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct TarnishedInputSet;
 
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ContactEventsSet;
+
 impl Plugin for TarnishedPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Drive>().init_resource::<Host>();
         replication::register(app);
+        incoming::register(app);
         app.add_systems(
             Update,
             tick.in_set(WorldStage::Input)
@@ -147,6 +153,7 @@ fn stop(host: &mut Host, drive: &mut Drive, link: &mut replication::Link, net: &
         drive.camera = None;
         host.backend = None;
         host.incoming.clear();
+        host.visual_incoming.clear();
         host.vertical_speed = 0.0;
         host.input = Default::default();
         // Off is ordered, never replaceable by a later pose in the visual mailbox.
@@ -362,6 +369,7 @@ fn tick(
     }
     if !drive.active {
         host.incoming.clear();
+        host.visual_incoming.clear();
         return;
     }
     if host.loadout != loadout {
@@ -520,7 +528,8 @@ fn tick(
     let Host {
         backend,
         combat,
-        incoming,
+        incoming: _,
+        visual_incoming: _,
         vertical_speed,
         grounded,
         steep_support,
@@ -650,58 +659,6 @@ fn tick(
                 });
             Transform::from_translation(eye).looking_at(pivot, Vec3::Y)
         });
-        while let Some(hit) = incoming.pop_front() {
-            let source = index
-                .0
-                .get(&hit.source_guid)
-                .and_then(|e| objects.get(*e).ok());
-            let source_position = source.map_or(drive.position, |(_, t, ..)| t.translation);
-            let toward = (source_position - drive.position)
-                .with_y(0.0)
-                .normalize_or_zero();
-            let forward = Quat::from_rotation_y(drive.yaw) * Vec3::NEG_Z;
-            let dot = toward.dot(forward).clamp(-1.0, 1.0);
-            let source_damage = source.map_or(0.0, |(_, _, s, ..)| {
-                (s.0.unit_min_damage().unwrap_or(0.0) + s.0.unit_max_damage().unwrap_or(0.0)) * 0.5
-            });
-            let local_damage = (self_store.0.unit_min_damage().unwrap_or(0.0)
-                + self_store.0.unit_max_damage().unwrap_or(0.0))
-                * 0.5;
-            let baseline = if source_damage > 0.0 {
-                source_damage
-            } else {
-                local_damage
-            };
-            let stamina = hit.stamina_milli.map_or_else(
-                || {
-                    backend.stock_stamina_damage(if baseline > 0.0 {
-                        hit.amount as f32 / baseline
-                    } else {
-                        0.0
-                    })
-                },
-                |value| value as f32 / 1000.0,
-            );
-            let outcome = defence::resolve(
-                &hit,
-                &DefenceState {
-                    iframe: backend.invincible(),
-                    passive_eligible: source.is_some()
-                        && dot >= 0.0
-                        && self_store.0.unit_flags() & 0x0004_0000 == 0,
-                    dodge_chance: self_store.0.player_dodge_percentage().unwrap_or(0.0) / 100.0,
-                    parry_chance: self_store.0.player_parry_percentage().unwrap_or(0.0) / 100.0,
-                    can_parry: loadout
-                        .is_some_and(|gear| gear.right != benilla_tarnished::ErWeapon::Fist),
-                    guard: backend.guard(stamina, dot),
-                },
-                rand::random::<f32>(),
-            );
-            if let Some(verdict) = combat.defence(hit, outcome) {
-                backend.react(outcome, stamina, reference_position(source_position));
-                send(Packet::Defence(verdict), &net);
-            }
-        }
         if let Some(swing) = backend.active_swing() {
             let candidates: Vec<Body> = objects
                 .iter()

@@ -132,7 +132,7 @@ index 9ce3685..3237630 100644
      return SPELL_MISS_NONE;
  }
 diff --git a/src/game/Objects/Unit.cpp b/src/game/Objects/Unit.cpp
-index 6b9a89a..ef14ce4 100644
+index 6b9a89a..3fc830b 100644
 --- a/src/game/Objects/Unit.cpp
 +++ b/src/game/Objects/Unit.cpp
 @@ -1306,7 +1306,7 @@ void Unit::PetOwnerKilledUnit(Unit* pVictim)
@@ -421,7 +421,7 @@ index 6b9a89a..ef14ce4 100644
 +            damageInfo.target = defender;
 +            source->FinishTarnishedMelee(&damageInfo, answer ? answer : &fallback, false);
 +        };
-+        if (Tarnished::Defer(this, pVictim->ToPlayer(), damageInfo.totalDamage, GetFirstSchoolInMask(GetMeleeDamageSchoolMask()), true, finish))
++        if (Tarnished::Defer(this, pVictim->ToPlayer(), damageInfo.totalDamage, GetFirstSchoolInMask(GetMeleeDamageSchoolMask()), true, finish, std::numeric_limits<uint32>::max(), 0x14, damageInfo.HitInfo))
 +            return;
 +        FinishTarnishedMelee(&damageInfo, &fallback, false);
 +        return;
@@ -678,7 +678,7 @@ index e6b748d..87316e8 100644
                  if (caster->IsMounted())
                      return SPELL_FAILED_NOT_MOUNTED;
 diff --git a/src/game/Spells/Spell.cpp b/src/game/Spells/Spell.cpp
-index abd1b5d..6a28cfa 100644
+index abd1b5d..a1d8161 100644
 --- a/src/game/Spells/Spell.cpp
 +++ b/src/game/Spells/Spell.cpp
 @@ -907,12 +907,15 @@ void Spell::AddUnitTarget(Unit* pTarget, SpellEffectIndex effIndex)
@@ -697,7 +697,7 @@ index abd1b5d..6a28cfa 100644
  
      // spell fly from visual cast object
      SpellCaster* affectiveObject = GetAffectiveCasterObject();
-@@ -1142,6 +1145,65 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
+@@ -1142,6 +1145,66 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
      if (!unit)
          return;
  
@@ -753,7 +753,8 @@ index abd1b5d..6a28cfa 100644
 +            DoAllEffectOnTarget(&resume);
 +        };
 +        if (Tarnished::Defer(m_casterUnit, unit->ToPlayer(), amount,
-+            uint8(GetFirstSchoolInMask(m_spellSchoolMask)), false, finish))
++            uint8(GetFirstSchoolInMask(m_spellSchoolMask)), false, finish,
++            std::numeric_limits<uint32>::max(), 0x15, m_spellInfo->Id, m_spellInfo->speed > 0.f))
 +            return;
 +        // Backpressure is a stock continuation, not immunity or a second damage calculation.
 +        finish(m_casterUnit, unit->ToPlayer(), nullptr);
@@ -763,7 +764,7 @@ index abd1b5d..6a28cfa 100644
      if (getState() == SPELL_STATE_DELAYED && (WorldTimer::getMSTime() - target->timeDelay) <= unit->m_lastSanctuaryTime && !m_spellInfo->IsPositiveSpell())
          return;
  
-@@ -1194,7 +1256,7 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
+@@ -1194,7 +1257,7 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
          procVictim   = PROC_FLAG_NONE;
      }
  
@@ -772,7 +773,7 @@ index abd1b5d..6a28cfa 100644
      {
          // mark effects that were already handled in Spell::HandleDelayedSpellLaunch on spell launch as processed
          for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i)
-@@ -1367,14 +1429,15 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
+@@ -1367,14 +1430,15 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
          }
      }
      // Do damage and triggers
@@ -790,7 +791,7 @@ index abd1b5d..6a28cfa 100644
          {
              // Copy damage calculated from HandleDelayedSpellLaunch
              damageInfo.damage = m_damage;
-@@ -1411,9 +1474,19 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
+@@ -1411,9 +1475,19 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
                  damageInfo.damage += damageInfo.damage / 2; // 150% of normal damage
          }
  
@@ -812,7 +813,7 @@ index abd1b5d..6a28cfa 100644
          m_absorbed = damageInfo.absorb;
  
          pCaster->DealDamageMods(damageInfo.target, damageInfo.damage, &damageInfo.absorb);
-@@ -4025,7 +4098,8 @@ void Spell::update(uint32 difftime)
+@@ -4025,7 +4099,8 @@ void Spell::update(uint32 difftime)
          nowPosZ = m_caster->GetPositionZ();
          nowO = m_caster->GetOrientation();
      }
@@ -822,7 +823,7 @@ index abd1b5d..6a28cfa 100644
         (fabs(m_castPosition.x - nowPosX) > 0.5f || fabs(m_castPosition.y - nowPosY) > 0.5f || fabs(m_castPosition.z - nowPosZ) > 0.5f) &&
         (m_spellInfo->Effect[EFFECT_INDEX_0] != SPELL_EFFECT_STUCK || !((Player*)m_caster)->m_movementInfo.HasMovementFlag(MOVEFLAG_FALLINGFAR)) &&
         (m_spellInfo->HasSpellInterruptFlag(SPELL_INTERRUPT_FLAG_MOVEMENT) || m_spellInfo->HasAuraInterruptFlag(AURA_INTERRUPT_MOVING_CANCELS) || m_spellInfo->HasChannelInterruptFlag(AURA_INTERRUPT_MOVING_CANCELS)))
-@@ -4129,7 +4203,7 @@ void Spell::update(uint32 difftime)
+@@ -4129,7 +4204,7 @@ void Spell::update(uint32 difftime)
                      }
                  }
  
@@ -831,7 +832,7 @@ index abd1b5d..6a28cfa 100644
                  {
                      // check if player has jumped before the channeling finished
                      if (((Player*)m_caster)->m_movementInfo.HasMovementFlag(MOVEFLAG_JUMPING))
-@@ -5302,6 +5376,11 @@ void Spell::RemoveChanneledAuraHolder(SpellAuraHolder* holder, AuraRemoveMode mo
+@@ -5302,6 +5377,11 @@ void Spell::RemoveChanneledAuraHolder(SpellAuraHolder* holder, AuraRemoveMode mo
  
  SpellCastResult Spell::CheckCast(bool strict)
  {
@@ -843,7 +844,7 @@ index abd1b5d..6a28cfa 100644
      if (m_casterUnit)
      {
          SpellCastResult skate = Skatecraft::CheckCast(m_casterUnit, m_spellInfo);
-@@ -5407,7 +5486,7 @@ SpellCastResult Spell::CheckCast(bool strict)
+@@ -5407,7 +5487,7 @@ SpellCastResult Spell::CheckCast(bool strict)
          {
              // skip stuck spell to allow use it in falling case and apply spell limitations at movement
              if ((!m_caster->m_movementInfo.HasMovementFlag(MOVEFLAG_FALLINGFAR) || m_spellInfo->Effect[EFFECT_INDEX_0] != SPELL_EFFECT_STUCK) &&
@@ -901,12 +902,12 @@ index 946b198..aff970b 100644
              continue;
 diff --git a/src/game/Tarnished.cpp b/src/game/Tarnished.cpp
 new file mode 100644
-index 0000000..18d6dc5
+index 0000000..6d7bc56
 --- /dev/null
 +++ b/src/game/Tarnished.cpp
-@@ -0,0 +1,606 @@
+@@ -0,0 +1,623 @@
 +// SPDX-License-Identifier: MIT OR Apache-2.0
-+// v3 capability: ordered stance/combat, coalesced visual poses; see protocol/tarnished.rs.
++// v4 capability: native windups and projectile contact defence; see protocol/tarnished.rs.
 +#include "Tarnished.h"
 +#include "Spell.h"
 +#include "Chat.h"
@@ -1094,13 +1095,21 @@ index 0000000..18d6dc5
 +        if (player->HasAura(SPELL_STANCE) && !Equipped(player))
 +            player->RemoveAurasDueToSpell(SPELL_STANCE);
 +        uint32 now = WorldTimer::getMSTime();
-+        while (!state.pending.empty() &&
-+               (!Active(player) || WorldTimer::getMSTimeDiff(state.pending.front().receipt, now) >= TIMEOUT))
++        // Visual windups have a longer deadline. A newer contact-time hit must not be
++        // held behind an older animation; drain all expired entries before invoking procs.
++        std::deque<Pending> expired;
++        for (auto it = state.pending.begin(); it != state.pending.end();)
 +        {
-+            Pending pending = std::move(state.pending.front());
-+            state.pending.pop_front();
-+            Resolve(player, std::move(pending), nullptr);
++            if (!Active(player) || WorldTimer::getMSTimeDiff(it->receipt, now) >= it->timeout)
++            {
++                expired.push_back(std::move(*it));
++                it = state.pending.erase(it);
++            }
++            else
++                ++it;
 +        }
++        for (auto& pending : expired)
++            Resolve(player, std::move(pending), nullptr);
 +    }
 +
 +    void ClearSource(Unit* source)
@@ -1132,20 +1141,21 @@ index 0000000..18d6dc5
 +            return false;
 +        auto& state = player->tarnished;
 +        uint32 now = WorldTimer::getMSTime();
-+        if (message != "TARNISHED\tV\t3" ||
++        if (message != "TARNISHED\tV\t4" ||
 +            (state.discovered && WorldTimer::getMSTimeDiff(state.capsReceipt, now) < 1000))
 +            return true;
 +        state.discovered = true;
 +        state.capsReceipt = now;
 +        WorldPacket response;
-+        ChatHandler::BuildChatPacket(response, CHAT_MSG_PARTY, "TARNISHED\tCAPS\t3", LANG_ADDON,
++        ChatHandler::BuildChatPacket(response, CHAT_MSG_PARTY, "TARNISHED\tCAPS\t4", LANG_ADDON,
 +                                     CHAT_TAG_NONE, ObjectGuid());
 +        player->GetSession()->SendPacket(&response);
 +        return true;
 +    }
 +
 +    bool Defer(Unit* source, Player* defender, uint32 amount, uint8 school, bool melee,
-+               std::function<void(Unit*, Player*, Answer const*)> finish, uint32 stamina)
++               std::function<void(Unit*, Player*, Answer const*)> finish, uint32 stamina,
++               uint8 visual, uint32 metadata, bool projectile)
 +    {
 +        if (!Active(defender) || !Allowed(source, defender, melee) ||
 +            defender->tarnished.pending.size() >= 64)
@@ -1160,12 +1170,20 @@ index 0000000..18d6dc5
 +        Pending pending;
 +        pending.token = token;
 +        pending.receipt = WorldTimer::getMSTime();
++        pending.timeout = visual ? VISUAL_TIMEOUT : TIMEOUT;
 +        pending.source = source->GetObjectGuid();
 +        pending.amount = amount;
 +        pending.melee = melee;
 +        pending.finish = std::move(finish);
 +        defender->tarnished.pending.push_back(std::move(pending));
 +        WorldPacket packet(SMSG_TARNISHED, 19);
++        // Envelope the unchanged Incoming body so contact-only ER attacks stay immediate.
++        if (visual)
++        {
++            packet << visual << metadata;
++            if (visual == 0x15)
++                packet << uint8(projectile);
++        }
 +        packet << uint8(0x13) << token << uint64(source->GetGUID()) << school << amount << uint8(melee);
 +        if (stamina != std::numeric_limits<uint32>::max())
 +            packet << stamina;
@@ -1426,8 +1444,8 @@ index 0000000..18d6dc5
 +        auto it = std::find_if(state.pending.begin(), state.pending.end(),
 +            [token](Pending const& hit) { return hit.token == token; });
 +        if (it == state.pending.end() || uint64(it->source) != guid ||
-+            WorldTimer::getMSTimeDiff(it->receipt, received) >= TIMEOUT ||
-+            WorldTimer::getMSTimeDiff(it->receipt, WorldTimer::getMSTime()) >= TIMEOUT ||
++            WorldTimer::getMSTimeDiff(it->receipt, received) >= it->timeout ||
++            WorldTimer::getMSTimeDiff(it->receipt, WorldTimer::getMSTime()) >= it->timeout ||
 +            ((outcome == 1 || outcome == 2) && !it->melee) ||
 +            (outcome == 3 && uint64(answer.absorbed) + answer.taken != it->amount) ||
 +            (outcome == 4 && answer.taken != it->amount) ||
@@ -1513,10 +1531,10 @@ index 0000000..18d6dc5
 +}
 diff --git a/src/game/Tarnished.h b/src/game/Tarnished.h
 new file mode 100644
-index 0000000..5abd7ad
+index 0000000..2720552
 --- /dev/null
 +++ b/src/game/Tarnished.h
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,100 @@
 +// SPDX-License-Identifier: MIT OR Apache-2.0
 +#ifndef TARNISHED_H
 +#define TARNISHED_H
@@ -1554,6 +1572,7 @@ index 0000000..5abd7ad
 +{
 +    constexpr uint32 SPELL_STANCE = 60006;
 +    constexpr uint32 TIMEOUT = 350;
++    constexpr uint32 VISUAL_TIMEOUT = 2500;
 +    // A null answer resumes precisely the stock continuation.
 +    struct Answer
 +    {
@@ -1565,6 +1584,7 @@ index 0000000..5abd7ad
 +    {
 +        uint32 token = 0;
 +        uint32 receipt = 0;
++        uint32 timeout = TIMEOUT;
 +        ObjectGuid source;
 +        uint32 amount = 0;
 +        bool melee = false;
@@ -1607,7 +1627,8 @@ index 0000000..5abd7ad
 +    bool SpellSupported(SpellEntry const*);
 +    bool Defer(Unit*, Player*, uint32, uint8, bool,
 +               std::function<void(Unit*, Player*, Answer const*)>,
-+               uint32 stamina = std::numeric_limits<uint32>::max());
++               uint32 stamina = std::numeric_limits<uint32>::max(),
++               uint8 visual = 0, uint32 metadata = 0, bool projectile = false);
 +    void Update(Player*);
 +    void Clear(Player*, bool login = false);
 +    void ClearSource(Unit*);

@@ -279,13 +279,23 @@ pub(super) fn drive_animations(
         MessageReader<BaseAnimRecompute>,
         Option<Res<crate::tarnished::Drive>>,
         Query<(), With<crate::tarnished::replication::ReplicatedTarnished>>,
+        MessageReader<super::SwingWindup>,
     ),
     // The variation roll's LCG, the reference's single CRT `_rand` stream shared by every play.
     mut rng: ResMut<benilla_assets::AnimRng>,
     // The last anim trace line per traced unit; the trace writes only on change.
     mut anim_trace_last: Local<std::collections::HashMap<Entity, String>>,
 ) {
-    let (emote_sounds, loot_kneel, time, names, mut recomputes, tarnished, remote_tarnished) = aux;
+    let (
+        emote_sounds,
+        loot_kneel,
+        time,
+        names,
+        mut recomputes,
+        tarnished,
+        remote_tarnished,
+        mut windups,
+    ) = aux;
     let dt = time.delta_secs();
     // This frame's one-shot plays per unit, replayed in the reference's call order (`PlaySeq`
     // stamps): a later call overwrites an earlier, and the combat fast path keys on what is playing
@@ -294,6 +304,12 @@ pub(super) fn drive_animations(
     // Wound flinches by victim, melee (`HitInfo & 0x2`) or spell (severity 0); the last wins, as a
     // re-trigger re-seeds the same secondary slot.
     let mut pending_wound: bevy::ecs::entity::EntityHashMap<WoundEdge> = default();
+    for s in windups.read() {
+        pending
+            .entry(s.attacker)
+            .or_default()
+            .push((OneShotReq::Swing(s.hit_info), s.seq));
+    }
     for s in swings.read() {
         // HitInfo 0x10000 suppresses the swing animation only.
         if s.hit_info & 0x10000 == 0 {

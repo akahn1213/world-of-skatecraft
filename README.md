@@ -75,6 +75,15 @@ A raised shield or two-handed guard blocks incoming melee hits regardless of WoW
 shield skill, including a druid holding a staff and attacks with elemental damage components.
 The guard still needs stamina and covers the front. Roll iframe avoidance registers as
 **Dodge**; a roll outside its extracted iframe window does not protect you.
+Both roll iframes and held guard are checked at the incoming melee animation's attack-hit key,
+or at the visible projectile's arrival for ranged attacks and travelling spells (including
+Fireball). Starting a block or roll after the attack starts can therefore still defend its hit.
+Non-travelling spells are checked when their impact request arrives. Damage confirmation no
+longer starts a second melee animation; numbers and hit feedback render on confirmation, with
+only the network round trip after contact. A short arrival-state history handles spell damage
+requests that arrive after the projectile. Missing animation keys/projectiles time out to stock
+server resolution rather than granting immunity. This requires rebuilding **both client and
+server** (Tarnished capability version 4).
 
 Attack hitboxes use **0.30 × character height + weapon range × multiplier**, in metres.
 The multiplier is **1.5 for Greatsword** (WoW two-handed swords, including Ashkandi) and
@@ -424,7 +433,8 @@ Use a consensual duel for player-versus-player tests and suitable nearby NPCs fo
   and change maps: no stale ER pose should remain.
 - In a supervised, controlled interruption, stop one client briefly and resume it.
   Remote poses expire rather than freeze indefinitely (client timeout is two seconds);
-  unanswered defender requests fall back to native server resolution (350 ms), not
+  unanswered defender requests fall back to native server resolution (350 ms for ER contacts,
+  2.5 seconds for native animation/projectile requests), not
   permanent invulnerability. Separate pose expiry from disconnect/despawn effects.
 
 Read the preflight banner first and record the build, gear, target, health/stamina changes

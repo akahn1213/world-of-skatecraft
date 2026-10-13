@@ -359,13 +359,15 @@ impl Backend for ReferenceBackend {
         &mut self,
         outcome: benilla_protocol::tarnished::DefenceOutcome,
         stamina_damage: f32,
-        source: [f32; 3],
+        _source: [f32; 3],
     ) {
         use benilla_protocol::tarnished::DefenceOutcome as O;
-        if matches!(outcome, O::Block { .. }) {
+        if let O::Block { guard_broken, .. } = outcome {
             // Fork policy: ordinary damage never interrupts an attack or movement. WoW owns HP;
             // only an actual block invokes the reference guard reaction and stamina/guard break.
-            self.receive_hit(0.0, stamina_damage, Vec3::from_array(source));
+            // A delayed projectile request uses the saved contact state. Rechecking the
+            // current guard/iframe here would refund valid blocks or create a late stagger.
+            self.player.host_guard_impact(stamina_damage, guard_broken);
         }
     }
 
@@ -609,6 +611,29 @@ mod tests {
             }
         }
         assert!(iframe_ticks > 0 && vulnerable_ticks > iframe_ticks);
+    }
+
+    #[test]
+    fn a_block_sampled_at_projectile_arrival_is_not_retested_after_guard_release() {
+        use benilla_protocol::tarnished::DefenceOutcome;
+        let mut backend = ReferenceBackend::sword_and_shield();
+        assert!(backend.guard(20.0, 1.0).is_none());
+        let stamina = backend.stamina();
+        backend.react(
+            DefenceOutcome::Block {
+                absorbed: 100,
+                taken: 0,
+                stamina_cost: 11,
+                guard_broken: false,
+            },
+            20.0,
+            [0.0, 0.0, 2.0],
+        );
+        assert!((backend.stamina() - (stamina - 11.0)).abs() < 0.001);
+        assert_eq!(
+            backend.action().map(|(id, _)| id),
+            Some(data::ActionId::GuardHit)
+        );
     }
 
     #[test]

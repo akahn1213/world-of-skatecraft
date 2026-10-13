@@ -68,6 +68,17 @@ fn main() {
             text.push_str(
                 r#"
 impl Player {
+    // The host already chose this block at visible contact. Never re-test a later roll/guard.
+    pub fn host_guard_impact(&mut self, stamina_damage: f32, broken: bool) {
+        if self.is_dead() { return; }
+        self.stamina = (self.stamina - stamina_damage * GUARD_STAMINA_TAKEN).max(0.0);
+        if broken || self.stamina <= 0.0 {
+            self.start(ActionId::GuardBreak);
+        } else {
+            self.start(ActionId::GuardHit);
+            self.guard_counter = GUARD_COUNTER_WINDOW;
+        }
+    }
     pub fn host_rebase_y(&mut self, y: f32) {
         let delta = y - self.pos.y;
         self.jump_base += delta;

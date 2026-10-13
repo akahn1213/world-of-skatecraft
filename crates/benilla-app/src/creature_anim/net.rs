@@ -129,8 +129,12 @@ fn on_attacker_state(
     mut commands: Commands,
 ) {
     if let SessionEvent::AttackerState(s) = ev {
-        let at_contact = (self_guid.0 == Some(s.attacker)
+        // Native attacks against us already played their windup before our defence answer.
+        // Confirmation renders now, never replaying/waiting for a second animation.
+        let at_contact = (self_guid.0 == Some(s.victim)
             && tarnished.as_ref().is_some_and(|drive| drive.active))
+            || (self_guid.0 == Some(s.attacker)
+                && tarnished.as_ref().is_some_and(|drive| drive.active))
             || index
                 .0
                 .get(&s.attacker)

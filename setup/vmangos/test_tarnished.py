@@ -236,6 +236,7 @@ int main() {
         header = added_file("src/game/Tarnished.h")
         code = r"""
 #include <algorithm>
+#include <limits>
 #include <cassert>
 #include <cmath>
 #include <cstring>
@@ -273,6 +274,7 @@ public:
 };
 namespace Tarnished {
 constexpr uint32 TIMEOUT = 350;
+constexpr uint32 VISUAL_TIMEOUT = 2500;
 """
         for name in ("Answer", "Pending", "State"):
             code += definition(header, f"struct {name}", True) + "\n"
@@ -375,6 +377,15 @@ int main() {
     p = defender(); p.tarnished.commandTokens = 0; p.tarnished.budgetTime = 100;
     Tarnished::Defence(&p, v, 100); assert(Tarnished::resolved == 2);
     p = defender(false); Tarnished::Defence(&p, verdict(0), 100); assert(Tarnished::resolved == 3);
+    // A visual contact may occur after the old 350 ms deadline. Both receipt and processing
+    // must use this pending hit's deadline; an ordinary ER contact retains its short bound.
+    p = defender(); p.tarnished.pending.front().timeout = Tarnished::VISUAL_TIMEOUT;
+    clockMs = 800; Tarnished::Defence(&p, verdict(0), 790); assert(Tarnished::resolved == 4);
+    p = defender(false); p.tarnished.pending.front().timeout = Tarnished::VISUAL_TIMEOUT;
+    Tarnished::Defence(&p, verdict(3), 790); assert(Tarnished::resolved == 5);
+    p = defender(); Tarnished::Defence(&p, verdict(0), 790); assert(Tarnished::resolved == 5);
+    p = defender(); p.tarnished.pending.front().timeout = Tarnished::VISUAL_TIMEOUT;
+    clockMs = 2590; Tarnished::Defence(&p, verdict(0), 2580); assert(Tarnished::resolved == 5);
 }
 """
         source = self.scratch / "validator.cpp"
@@ -444,6 +455,7 @@ printf '%s\\n' "$*" >> "$MOCK_ROOT/build.log"
         header = added_file("src/game/Tarnished.h")
         code = r"""
 #include <algorithm>
+#include <limits>
 #include <cassert>
 #include <cstdint>
 #include <functional>
@@ -464,7 +476,8 @@ static bool delay = true;
 static uint32 amount = 0;
 static std::function<void(Unit*, Player*, Answer const*)> pending;
 static bool Defer(Unit*, Player*, uint32 value, uint32, bool,
-                  std::function<void(Unit*, Player*, Answer const*)> callback) {
+                  std::function<void(Unit*, Player*, Answer const*)> callback, uint32, uint8 visual, uint32) {
+    assert(visual == 0x14);
     amount = value; pending = callback; return delay;
 }
 }
@@ -584,6 +597,7 @@ int main() {
         cpp = added_file("src/game/Objects/Unit.cpp")
         code = r"""
 #include <algorithm>
+#include <limits>
 #include <cassert>
 #include <cstdint>
 using uint8 = uint8_t; using uint32 = uint32_t;

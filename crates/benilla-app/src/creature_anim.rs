@@ -536,7 +536,9 @@ use breath::{classify_breath, fire_breath};
 
 mod impact;
 use impact::route_swing_impacts;
-pub(crate) use impact::{DefenseAnim, PendingImpacts, SwingFlush, SwingImpact, SwingSlowdown};
+pub(crate) use impact::{
+    impact_tag, DefenseAnim, PendingImpacts, SwingFlush, SwingImpact, SwingSlowdown,
+};
 
 /// The melee blood spurt.
 mod blood;
@@ -743,11 +745,20 @@ impl AnimDriver {
     }
 }
 
+/// Fork-only animation request: no resolved damage or feedback exists until the hit key.
+#[derive(Message, Clone, Copy)]
+pub(crate) struct SwingWindup {
+    pub attacker: Entity,
+    pub hit_info: u32,
+    pub seq: u64,
+}
+
 /// Drives unit animation after `WorldStage::Net`, so it reads the current frame's movement.
 pub(crate) struct CreatureAnimPlugin;
 
 impl Plugin for CreatureAnimPlugin {
     fn build(&self, app: &mut App) {
+        app.add_message::<SwingWindup>();
         net::register(app);
         twist::plugin(app);
         lod::plugin(app);
@@ -816,7 +827,7 @@ impl Plugin for CreatureAnimPlugin {
                     // Right after the driver, which rewrites `AnimDriver::started_anim` each pass.
                     crate::weapon_trail::fire_weapon_trails,
                     drive_hand_grip,
-                    fire_anim_events,
+                    fire_anim_events.in_set(crate::tarnished::ContactEventsSet),
                     route_swing_impacts,
                     // Before the entity visuals, so the arrow changes on the keyframe's frame.
                     drive_nock_latch,
