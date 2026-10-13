@@ -1,5 +1,7 @@
 # World of Skatecraft
 
+> Test note: this README edit verifies the branch editing workflow.
+
 Skate 3 skateboarding in World of Warcraft 1.12.1. Summon your skateboard like a mount and your
 character drops onto it, with Skate 3's own physics: flick-it tricks, grinds on any ledge,
 powerslides and bails, anywhere in Azeroth. Your own character does the tricks, in your own gear.
