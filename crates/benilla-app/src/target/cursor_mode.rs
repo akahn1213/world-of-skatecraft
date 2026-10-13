@@ -433,7 +433,7 @@ pub(crate) fn questgiver_has_quest(quest_status: Option<u32>) -> bool {
 
 /// The service ladder (`0x482336..0x4824e3`, unrolled): lowest set bit wins. `None` when no tested
 /// bit is set, repair-only units included: bit 14 is never tested.
-fn service_cursor(service: u32, quest_status: Option<u32>) -> Option<CursorKind> {
+pub(super) fn service_cursor(service: u32, quest_status: Option<u32>) -> Option<CursorKind> {
     use npc_flags::*;
     // Bits 0 and 1 both give Speak, so they fold into one test; only bit 1 is gated.
     if service & GOSSIP != 0 || (service & QUESTGIVER != 0 && questgiver_has_quest(quest_status)) {

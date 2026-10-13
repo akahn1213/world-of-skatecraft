@@ -26,6 +26,9 @@ pub struct ReferenceBackend {
     view: Option<([f32; 3], [f32; 3])>,
     grounded: bool,
     feedback_window: Option<u64>,
+    character_height: f32,
+    landed: bool,
+    jump_velocity: Option<f32>,
 }
 
 impl ReferenceBackend {
@@ -46,6 +49,9 @@ impl ReferenceBackend {
             view: None,
             grounded: true,
             feedback_window: None,
+            character_height: 2.0,
+            landed: false,
+            jump_velocity: None,
         }
     }
 
@@ -79,6 +85,7 @@ impl ReferenceBackend {
 
     /// Synchronize with the host's collision-resolved transform before stepping.
     pub fn set_transform(&mut self, position: Vec3, yaw: f32) {
+        self.player.host_rebase_y(position.y);
         self.player.pos = position;
         self.player.yaw = yaw;
     }
@@ -183,21 +190,42 @@ impl Backend for ReferenceBackend {
             heavy: button(input.heavy_attack, self.previous.heavy_attack),
             guard: button(input.guard, self.previous.guard),
             dodge: button(input.dodge, self.previous.dodge),
+            jump: button(input.jump, self.previous.jump),
             ..Default::default()
         };
         // The host owns support/vertical travel; upstream still selects its own fall and landing.
         let floor = self.player.pos.y;
-        if !self.grounded && !matches!(self.player.state, State::Air(_)) {
+        if self.landed {
+            self.player.host_land(&inp, input.target.is_some());
+            self.landed = false;
+        }
+        let was_jump =
+            matches!(self.player.state, State::Act(a) if matches!(a.id, data::ActionId::Jump(_)));
+        if !self.grounded && !was_jump && !matches!(self.player.state, State::Air(_)) {
             self.player.state = State::Air(crate::sim::player::Air {
                 vel: self.player.move_dir * self.player.speed,
                 jumped: false,
                 f: 0.0,
             });
         }
-        self.player.pos.y = if self.grounded { 0.0 } else { 1.0 };
-        let target = input.target.map(|p| Vec3::from_array(p) - Vec3::Y * floor);
+        // Put unsupported feet well above the synthetic floor; only host collision may land.
+        let local_y = if self.grounded { 0.0 } else { 1000.0 };
+        self.player.host_rebase_y(local_y);
+        let before = self.player.pos;
+        let target = input
+            .target
+            .map(|p| Vec3::from_array(p) + Vec3::Y * (local_y - floor));
         self.player.step(&inp, &self.level, target, true);
-        self.player.pos.y = floor;
+        let is_jump =
+            matches!(self.player.state, State::Act(a) if matches!(a.id, data::ActionId::Jump(_)));
+        let rise = self.player.pos.y - local_y;
+        self.jump_velocity = (was_jump || is_jump).then_some(rise / crate::runtime::TICK as f32);
+        if input.casting {
+            self.player.pos.x = before.x + (self.player.pos.x - before.x) * 0.6;
+            self.player.pos.z = before.z + (self.player.pos.z - before.z) * 0.6;
+        }
+        self.player
+            .host_rebase_y(floor + self.jump_velocity.map_or(0.0, |_| rise));
         let next = self.action();
         if next.is_some_and(|(id, frame)| {
             self.action
@@ -214,10 +242,21 @@ impl Backend for ReferenceBackend {
     }
 
     fn active_swing(&self) -> Option<Swing> {
-        self.player.active_hit().map(|hit| Swing {
-            radius: hit.radius,
-            sweep: hit.sweep,
+        self.player.active_hit().map(|hit| {
+            Swing::from_extracted(
+                self.player.pos,
+                hit.radius,
+                hit.sweep,
+                self.character_height,
+                self.state().weapon_class,
+            )
         })
+    }
+
+    fn set_character_height(&mut self, height: f32) {
+        if height.is_finite() && height > 0.0 {
+            self.character_height = height;
+        }
     }
 
     fn attack_timing(&self) -> Option<crate::AttackTiming> {
@@ -269,6 +308,7 @@ impl Backend for ReferenceBackend {
     }
 
     fn set_transform(&mut self, position: [f32; 3], yaw: f32) {
+        self.player.host_rebase_y(position[1]);
         self.player.pos = Vec3::from_array(position);
         self.player.yaw = yaw;
     }
@@ -278,6 +318,7 @@ impl Backend for ReferenceBackend {
             position: self.player.pos.to_array(),
             yaw: self.player.yaw,
             stamina: self.player.stamina,
+            jump_velocity: self.jump_velocity,
             weapon_class: self.player.moveset().weapon,
             contact_window: u64::from(self.epoch) << 32,
             ..Default::default()
@@ -348,6 +389,7 @@ impl Backend for ReferenceBackend {
     }
 
     fn set_grounded(&mut self, grounded: bool) {
+        self.landed |= grounded && !self.grounded;
         self.grounded = grounded;
     }
 
@@ -490,6 +532,161 @@ mod tests {
     }
 
     #[test]
+    fn staff_guard_and_roll_iframes_resolve_incoming_damage_without_class_skills() {
+        use crate::defence::{resolve, DefenceState};
+        use benilla_protocol::tarnished::{DefenceOutcome, Incoming};
+        let mut backend = ReferenceBackend::sword_and_shield();
+        backend
+            .equip(crate::Loadout {
+                right: crate::ErWeapon::Twinblade,
+                right_hand: crate::Hand::Two,
+                offhand: crate::Offhand::Empty,
+                two_handing: true,
+            })
+            .unwrap();
+        let incoming = Incoming {
+            attack_id: 1,
+            source_guid: 2,
+            school: 0,
+            amount: 100,
+            melee: true,
+            stamina_milli: None,
+        };
+        for _ in 0..30 {
+            backend.step(BackendInput {
+                guard: true,
+                ..Default::default()
+            });
+        }
+        let outcome = resolve(
+            &incoming,
+            &DefenceState {
+                guard: backend.guard(20.0, 1.0),
+                ..Default::default()
+            },
+            1.0,
+        );
+        assert!(matches!(
+            outcome,
+            DefenceOutcome::Block {
+                absorbed: 100,
+                taken: 0,
+                ..
+            }
+        ));
+        let stamina = backend.stamina();
+        backend.react(outcome, 20.0, [0.0, 0.0, 2.0]);
+        assert!(backend.stamina() < stamina);
+        for _ in 0..120 {
+            backend.step(BackendInput::default());
+        }
+        backend.step(BackendInput {
+            move_y: 1.0,
+            dodge: true,
+            ..Default::default()
+        });
+        let mut iframe_ticks = 0;
+        let mut vulnerable_ticks = 0;
+        for _ in 0..120 {
+            backend.step(BackendInput {
+                move_y: 1.0,
+                ..Default::default()
+            });
+            let outcome = resolve(
+                &incoming,
+                &DefenceState {
+                    iframe: backend.invincible(),
+                    ..Default::default()
+                },
+                1.0,
+            );
+            if backend.invincible() {
+                assert_eq!(outcome, DefenceOutcome::Iframe);
+                iframe_ticks += 1;
+            } else {
+                assert_eq!(outcome, DefenceOutcome::Hit { taken: 100 });
+                vulnerable_ticks += 1;
+            }
+        }
+        assert!(iframe_ticks > 0 && vulnerable_ticks > iframe_ticks);
+    }
+
+    #[test]
+    fn casting_moves_at_sixty_percent_and_restores_speed_after_release() {
+        let mut normal = ReferenceBackend::sword_and_shield();
+        let mut casting = ReferenceBackend::sword_and_shield();
+        for frame in 0..180 {
+            let input = BackendInput {
+                move_y: 1.0,
+                ..Default::default()
+            };
+            let n = normal.position();
+            let c = casting.position();
+            normal.step(input);
+            casting.step(BackendInput {
+                casting: frame < 120,
+                ..input
+            });
+            let ratio = if frame < 120 { 0.6 } else { 1.0 };
+            assert!(
+                ((casting.position() - c).length() - (normal.position() - n).length() * ratio)
+                    .abs()
+                    < 0.0001
+            );
+        }
+    }
+
+    #[test]
+    fn authored_jump_survives_host_airborne_support_and_lands_on_real_terrain() {
+        for base in [0.0, 30.0, -12.0] {
+            let mut backend = ReferenceBackend::sword_and_shield();
+            backend.set_transform(Vec3::Y * base, 0.0);
+            let mut peak = base;
+            let mut left_ground = false;
+            let mut landed = false;
+            let mut velocity = 0.0;
+            for frame in 0..240 {
+                let before = backend.position();
+                backend.step(BackendInput {
+                    jump: frame == 0,
+                    ..Default::default()
+                });
+                let state = backend.state();
+                let mut position = backend.position();
+                if let Some(speed) = state.jump_velocity {
+                    velocity = speed;
+                } else if left_ground && !landed {
+                    velocity -= 19.29 * crate::runtime::TICK as f32;
+                    position.y = before.y + velocity * crate::runtime::TICK as f32;
+                }
+                peak = peak.max(position.y);
+                if position.y > base + 0.01 {
+                    left_ground = true;
+                    backend.set_grounded(false);
+                } else if left_ground && velocity < 0.0 {
+                    position.y = base;
+                    backend.set_grounded(true);
+                    landed = true;
+                }
+                backend.set_transform(position, state.yaw);
+                if landed {
+                    backend.step(BackendInput::default());
+                    assert!(!matches!(backend.player.state, State::Air(_)));
+                    assert!(
+                        !matches!(backend.player.state, State::Act(a) if matches!(a.id, data::ActionId::Jump(_)))
+                    );
+                    break;
+                }
+            }
+            assert!(
+                peak > base + 0.5,
+                "authored jump must leave the ground: {peak}"
+            );
+            assert!(landed, "jump must return to host terrain");
+        }
+    }
+
+    #[test]
     fn ordinary_damage_does_not_interrupt_light_or_heavy_attacks() {
         use benilla_protocol::tarnished::DefenceOutcome;
         for heavy in [false, true] {
@@ -513,6 +710,155 @@ mod tests {
             assert!(
                 matches!(backend.player.state, State::Act(a) if matches!(a.id, data::ActionId::Attack(..)))
             );
+        }
+    }
+
+    #[test]
+    fn live_character_height_changes_only_the_additive_reach() {
+        let mut backend = ReferenceBackend::sword_and_shield();
+        backend.step(BackendInput {
+            light_attack: true,
+            ..Default::default()
+        });
+        for _ in 0..600 {
+            backend.step(BackendInput::default());
+            if backend.active_swing().is_some() {
+                break;
+            }
+        }
+        let stamina = backend.stamina();
+        backend.set_character_height(1.0);
+        let short = backend.active_swing().expect("active light attack");
+        backend.set_character_height(3.0);
+        let tall = backend.active_swing().expect("same active attack");
+        assert_eq!(short.origin, tall.origin);
+        assert_eq!(short.radius, tall.radius);
+        for ((a, b), (c, d)) in short.sweep.into_iter().zip(tall.sweep) {
+            assert_eq!(a, c, "height must not displace the near end");
+            assert_eq!(b.y, d.y, "height allowance is horizontal");
+            assert!(((d - b).length() - 0.6).abs() < 0.0001);
+        }
+        assert_eq!(backend.stamina(), stamina);
+    }
+
+    #[test]
+    fn greatsword_heavy_uses_additive_reach_during_live_ticks() {
+        use crate::attack::{resolve_swing, Body};
+        use crate::scale::WowWeapon;
+        use crate::weapon::{ErWeapon, Hand, Loadout, Offhand};
+        let mut backend = ReferenceBackend::sword_and_shield();
+        backend
+            .equip(Loadout::new(
+                ErWeapon::Greatsword,
+                Hand::Two,
+                Offhand::Empty,
+            ))
+            .unwrap();
+        backend.step(BackendInput {
+            heavy_attack: true,
+            ..Default::default()
+        });
+        let mut connected = false;
+        let mut peak = 0.0_f32;
+        for _ in 0..600 {
+            backend.step(BackendInput::default());
+            let Some(swing) = backend.active_swing() else {
+                continue;
+            };
+            let forward = backend.player.facing();
+            for (a, b) in swing.sweep {
+                for point in [a, b] {
+                    peak = peak.max((point - backend.position()).dot(forward) + swing.radius);
+                }
+            }
+            let target = |guid, distance| Body {
+                guid,
+                pos: backend.position() + forward * distance,
+                radius: 0.4,
+                height: 1.8,
+                head_height: 1.7,
+                head_radius: 0.2,
+            };
+            // Relative to the current player position: root-motion lunges cannot fake reach.
+            let hits = resolve_swing(
+                &swing,
+                WowWeapon {
+                    min_damage: 10.0,
+                    max_damage: 10.0,
+                },
+                1.0,
+                &[target(1, 3.4), target(2, 4.5)],
+                |_| Default::default(),
+            );
+            connected |= hits.iter().any(|hit| hit.guid == 1);
+            assert!(
+                !hits.iter().any(|hit| hit.guid == 2),
+                "4.5 metres remains out of reach for this live heavy swing"
+            );
+        }
+        assert!(
+            connected,
+            "a humanoid 3.4 m ahead must be reachable by the heavy swing; peak={peak}"
+        );
+        assert!(
+            (3.5..3.65).contains(&peak),
+            "expected about 1.98 * 1.5 + 0.3 * 2 m at the last live tick, got {peak}"
+        );
+    }
+
+    #[test]
+    fn close_contact_still_requires_an_extracted_active_hit_frame() {
+        use crate::attack::{resolve_swing, Body};
+        use crate::scale::WowWeapon;
+        for heavy in [false, true] {
+            let mut backend = ReferenceBackend::sword_and_shield();
+            backend.step(BackendInput {
+                light_attack: !heavy,
+                heavy_attack: heavy,
+                ..Default::default()
+            });
+            let mut active_ticks = 0;
+            let mut inactive_ticks = 0;
+            for _ in 0..600 {
+                backend.step(BackendInput::default());
+                let active = backend.action().is_some_and(|(id, frame)| {
+                    id.def()
+                        .hits
+                        .iter()
+                        .any(|hit| frame >= hit.from && frame < hit.to)
+                });
+                let swing = backend.active_swing();
+                assert_eq!(
+                    swing.is_some(),
+                    active,
+                    "windup/recovery cannot hit by proximity"
+                );
+                if let Some(swing) = swing {
+                    let target = Body {
+                        guid: 1,
+                        pos: backend.position() - backend.player.facing() * 0.9,
+                        radius: 0.4,
+                        height: 1.8,
+                        head_height: 1.7,
+                        head_radius: 0.2,
+                    };
+                    let hits = resolve_swing(
+                        &swing,
+                        WowWeapon {
+                            min_damage: 10.0,
+                            max_damage: 10.0,
+                        },
+                        1.0,
+                        &[target],
+                        |_| Default::default(),
+                    );
+                    assert_eq!(hits.len(), 1, "slightly overshot enemy stays hittable");
+                    active_ticks += 1;
+                } else {
+                    inactive_ticks += 1;
+                }
+            }
+            assert!(active_ticks > 0 && inactive_ticks > 0);
         }
     }
 

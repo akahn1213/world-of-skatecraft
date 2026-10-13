@@ -447,8 +447,9 @@ printf '%s\\n' "$*" >> "$MOCK_ROOT/build.log"
 #include <cassert>
 #include <cstdint>
 #include <functional>
-using uint8 = uint8_t; using uint32 = uint32_t; using int32 = int32_t;
+using uint8 = uint8_t; using uint32 = uint32_t; using uint64 = uint64_t; using int32 = int32_t;
 class Unit; class Player;
+uint32 GetFirstSchoolInMask(uint32 mask) { return mask; }
 enum MeleeHitOutcome { MELEE_HIT_NORMAL, MELEE_HIT_CRIT, MELEE_HIT_CRUSHING,
     MELEE_HIT_GLANCING, MELEE_HIT_MISS, MELEE_HIT_DODGE, MELEE_HIT_PARRY, MELEE_HIT_BLOCK };
 constexpr uint32 HITINFO_CRITICALHIT = 1, HITINFO_GLANCING = 2, HITINFO_CRUSHING = 4;
@@ -471,11 +472,14 @@ struct CalcDamageInfo {
     Unit* attacker = nullptr; Unit* target = nullptr;
     uint32 totalDamage = 0, HitInfo = 0, procEx = 0, cleanDamage = 0;
     MeleeHitOutcome hitOutCome = MELEE_HIT_NORMAL;
-    struct { uint32 damage = 0; } subDamage[1];
+    struct { uint32 damage = 0; } subDamage[2];
 };
 class Unit {
 public:
     unsigned rolls = 0, applications = 0;
+    uint8 components = 1;
+    uint8 GetWeaponDamageCount(uint32) { return components; }
+    uint32 GetMeleeDamageSchoolMask() { return 0; }
     MeleeHitOutcome next = MELEE_HIT_NORMAL;
     CalcDamageInfo last;
     bool IsAlive() const { return true; }
@@ -496,10 +500,10 @@ public:
     void FinishMeleeCalculation(CalcDamageInfo* hit, Tarnished::Answer const* answer, bool, bool) {
         assert(answer); // delayed paths never re-enter the stock roller
         hit->hitOutCome = MELEE_HIT_NORMAL; hit->procEx = PROC_EX_NORMAL_HIT;
-        if (answer->outcome <= 2) {
+        if (answer->outcome <= 2 || answer->outcome == 5) {
             hit->totalDamage = 0;
-            hit->hitOutCome = answer->outcome == 0 ? MELEE_HIT_MISS :
-                answer->outcome == 1 ? MELEE_HIT_DODGE : MELEE_HIT_PARRY;
+            hit->hitOutCome = answer->outcome == 5 ? MELEE_HIT_MISS :
+                answer->outcome <= 1 ? MELEE_HIT_DODGE : MELEE_HIT_PARRY;
         }
         if (answer->outcome == 3) {
             hit->totalDamage -= answer->absorbed;
@@ -518,6 +522,8 @@ Player* Unit::ToPlayer() { return static_cast<Player*>(this); }
 void Unit::swing(Unit* pVictim) {
     CalcDamageInfo damageInfo; damageInfo.totalDamage = 100;
     damageInfo.attacker = this; damageInfo.target = pVictim;
+    damageInfo.subDamage[0].damage = components == 1 ? 100 : 70;
+    damageInfo.subDamage[1].damage = components == 1 ? 0 : 30;
     uint32 attType = 0; bool deferred = true;
 """
         code += definition(cpp, "if (deferred)") + "\n}\n"
@@ -547,7 +553,7 @@ int main() {
     source = Unit{}; source.swing(&defender);
     Tarnished::Answer iframe; iframe.outcome = 0;
     Tarnished::pending(&source, &defender, &iframe);
-    assert(!source.last.totalDamage && (source.last.HitInfo & HITINFO_MISS));
+    assert(!source.last.totalDamage && source.last.hitOutCome == MELEE_HIT_DODGE);
     source = Unit{}; source.next = MELEE_HIT_MISS; source.swing(&defender);
     Tarnished::pending(&source, &defender, nullptr);
     assert(!source.last.totalDamage && (source.last.HitInfo & HITINFO_MISS));
@@ -556,6 +562,12 @@ int main() {
     Tarnished::Answer hit; hit.taken = 150;
     Tarnished::pending(&source, &defender, &hit);
     assert(source.rolls == 1 && source.applications == 1 && source.last.totalDamage == 150);
+    source = Unit{}; source.components = 2; source.next = MELEE_HIT_CRIT;
+    source.swing(&defender);
+    hit.taken = 200;
+    Tarnished::pending(&source, &defender, &hit);
+    assert(source.last.totalDamage == 200);
+    assert(source.last.subDamage[0].damage == 140 && source.last.subDamage[1].damage == 60);
     Tarnished::delay = false; source = Unit{}; source.next = MELEE_HIT_CRIT;
     source.swing(&defender);
     assert(source.rolls == 1 && source.applications == 1 && source.last.totalDamage == 200);
@@ -563,6 +575,94 @@ int main() {
 """
         source = self.scratch / "melee.cpp"
         binary = self.scratch / "melee"
+        source.write_text(code)
+        subprocess.run(["g++", "-std=c++14", "-Wall", "-Wextra", "-Werror",
+                        str(source), "-o", str(binary)], check=True)
+        subprocess.run([str(binary)], check=True)
+
+    def test_actual_guard_covers_all_components_without_a_shield(self):
+        cpp = added_file("src/game/Objects/Unit.cpp")
+        code = r"""
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+using uint8 = uint8_t; using uint32 = uint32_t;
+constexpr uint32 VICTIMSTATE_BLOCKS=2, PROC_EX_NORMAL_HIT=1;
+struct Answer { uint32 absorbed; };
+struct Damage {
+    uint32 totalDamage=100, blocked_amount=0, cleanDamage=0, TargetState=0, procEx=0;
+    uint32 attackType=0;
+    struct { uint32 damage; } subDamage[2] = {{70}, {30}};
+};
+void apply(Damage* damageInfo, Answer const* answer) {
+    uint8 m_weaponDamageCount[1]={2};
+    do {
+"""
+        code += definition(cpp, "if (answer)\n            {\n                // Held ER guard")
+        code += r"""
+    } while (false);
+}
+int main() {
+    Damage hit; Answer block{100}; apply(&hit, &block);
+    assert(!hit.totalDamage && !hit.subDamage[0].damage && !hit.subDamage[1].damage);
+    assert(hit.TargetState==VICTIMSTATE_BLOCKS && hit.blocked_amount==100);
+    hit=Damage{}; block.absorbed=80; apply(&hit, &block);
+    assert(hit.totalDamage==20 && !hit.subDamage[0].damage && hit.subDamage[1].damage==20);
+    assert(hit.procEx==PROC_EX_NORMAL_HIT && hit.cleanDamage==80);
+}
+"""
+        source = self.scratch / "guard.cpp"
+        binary = self.scratch / "guard"
+        source.write_text(code)
+        subprocess.run(["g++", "-std=c++14", "-Wall", "-Wextra", "-Werror",
+                        str(source), "-o", str(binary)], check=True)
+        subprocess.run([str(binary)], check=True)
+
+    def test_movement_keeps_tarnished_casts_and_channels_but_still_removes_food(self):
+        section = PATCH.read_text().split("diff --git a/src/game/Objects/Unit.cpp", 1)[1]
+        section = section.split("\ndiff --git ", 1)[0]
+        # Retain unchanged context as well as additions, so this executes the real movement gate.
+        cpp = "\n".join(line[1:] for line in section.splitlines()
+                        if line.startswith(("+", " ")) and not line.startswith("+++"))
+        start = cpp.index("void Unit::HandleInterruptsOnMovement")
+        end = cpp.index("// Fix bug after 1.11", start)
+        body = cpp[start:end] + "}\n"
+        code = r"""
+#include <cassert>
+#include <cstdint>
+using uint32 = uint32_t;
+constexpr int CURRENT_CHANNELED_SPELL=1, SPELL_INTERRUPT_FLAG_MOVEMENT=1;
+constexpr int AURA_INTERRUPT_MOVING_CANCELS=8, AURA_INTERRUPT_TURNING_CANCELS=16;
+struct SpellInfo { uint32 Id=5143; };
+struct Spell { SpellInfo info; SpellInfo* m_spellInfo=&info; };
+struct Unit {
+    bool active=false; Spell* channel=nullptr;
+    int casts=0, channels=0, auraRemovals=0; uint32 exempt=0;
+    Spell* GetCurrentSpell(int) { return channel; }
+    void InterruptSpellsWithInterruptFlags(int) { ++casts; }
+    void InterruptSpellsWithChannelFlags(int) { ++channels; }
+    void RemoveAurasWithInterruptFlags(int, uint32 except) { ++auraRemovals; exempt=except; }
+    void HandleEmoteState(int) {}
+    void HandleInterruptsOnMovement(bool);
+};
+namespace Tarnished { bool Active(Unit* unit) { return unit->active; } }
+"""
+        code += body
+        code += r"""
+int main() {
+    Unit normal; normal.HandleInterruptsOnMovement(true);
+    assert(normal.casts==1 && normal.channels==1 && normal.auraRemovals==1 && !normal.exempt);
+    Unit stance; Spell channel; stance.active=true; stance.channel=&channel;
+    stance.HandleInterruptsOnMovement(true);
+    assert(!stance.casts && !stance.channels && stance.auraRemovals==1 && stance.exempt==5143);
+    stance.HandleInterruptsOnMovement(false);
+    assert(stance.auraRemovals==2 && stance.exempt==5143);
+    stance.active=false; stance.HandleInterruptsOnMovement(true);
+    assert(stance.casts==1 && stance.channels==1 && !stance.exempt);
+}
+"""
+        source = self.scratch / "moving-cast.cpp"
+        binary = self.scratch / "moving-cast"
         source.write_text(code)
         subprocess.run(["g++", "-std=c++14", "-Wall", "-Wextra", "-Werror",
                         str(source), "-o", str(binary)], check=True)
@@ -606,7 +706,7 @@ int main() {
     Spell spell; Tarnished::Answer iframe; iframe.outcome = 0;
     spell.resume(target, &source, &defender, &iframe);
     assert(!spell.holds && spell.applications == 1);
-    assert(spell.last.missCondition == SPELL_MISS_MISS && !spell.last.damage);
+    assert(spell.last.missCondition == SPELL_MISS_DODGE && !spell.last.damage);
     assert(!spell.last.tarnishedBlock && !spell.last.tarnishedStock);
     for (auto miss : {SPELL_MISS_MISS, SPELL_MISS_RESIST, SPELL_MISS_DODGE, SPELL_MISS_PARRY}) {
         spell = Spell{}; target.tarnishedMiss = miss;

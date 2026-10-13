@@ -141,6 +141,7 @@ pub(super) fn select_on_click(
 /// The service arms that are not a bare packet, bundled for the 16-param ceiling.
 #[derive(bevy::ecs::system::SystemParam)]
 pub(crate) struct ServiceArms<'w> {
+    controller: Option<ResMut<'w, super::controller::Interaction>>,
     /// The last `SMSG_QUESTGIVER_STATUS` per guid (`[unit+0xcb8]`), read by bit 1's `0x5df490`.
     pub(crate) quest: Res<'w, crate::ui_quest::QuestGiver>,
     /// Bit 7: `0x5dfdc0` fires `CONFIRM_BINDER`; `CMSG_BINDER_ACTIVATE` is the dialog's Accept.
@@ -198,9 +199,21 @@ pub(super) fn act_on_right_click(
 ) {
     let (mut ui_error_keys, mut cast_errors, mut mail, mut item_text, mut openers, mut stone_uses) =
         ui_feedback;
-    if clicks.read().last().is_none() {
+    let clicked = clicks.read().last().is_some();
+    let controller_pick = service
+        .controller
+        .as_mut()
+        .and_then(|request| request.0.take());
+    if !clicked && controller_pick.is_none() {
         return;
     }
+    // A real mouse click takes precedence; Y never mutates the mouse's latched pick.
+    let controller = !clicked && controller_pick.is_some();
+    let press = if controller {
+        controller_pick.as_ref().unwrap()
+    } else {
+        &press
+    };
     let (hovered, hovered_object, cursor) = (&press.hovered, &press.object, &press.cursor);
     // The reference's one mounted predicate, the player's `UNIT_FIELD_MOUNTDISPLAYID`.
     let self_store = self_player
@@ -374,7 +387,11 @@ pub(super) fn act_on_right_click(
             // Range rides the cursor's gray, so the pouch is never lit where the click refuses.
             if !cursor.unable {
                 debug!("right-click corpse loot: {guid:#x}");
-                let _ = seam.net.0.send(ClientCommand::Loot { guid });
+                seam.loot
+                    .request_controller_loot(controller.then_some(guid));
+                if !controller || seam.loot.source() != Some(guid) {
+                    let _ = seam.net.0.send(ClientCommand::Loot { guid });
+                }
                 // Predicted, as for a unit corpse (`[player+0x1d28]` armed at the send).
                 seam.loot_latch.0 = Some(guid);
             }
@@ -484,7 +501,11 @@ pub(super) fn act_on_right_click(
                     .push(crate::ui_action::UiError::key("ERR_LOOT_NOTSTANDING"));
             } else if !cursor.unable {
                 debug!("right-click loot: {guid:#x}");
-                let _ = seam.net.0.send(ClientCommand::Loot { guid });
+                seam.loot
+                    .request_controller_loot(controller.then_some(guid));
+                if !controller || seam.loot.source() != Some(guid) {
+                    let _ = seam.net.0.send(ClientCommand::Loot { guid });
+                }
                 // Predicted at the send, as the reference's sender (`0x5df253`) arms
                 // `[player+0x1d28]` and kneels before any reply; the anim driver reads the latch.
                 seam.loot_latch.0 = Some(guid);

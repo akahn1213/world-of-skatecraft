@@ -67,6 +67,7 @@ struct Host {
     input: InputBuffer,
     transport: Mutex<benilla_controller::ControllerTransport>,
     controller: benilla_controller::CombatInput,
+    switch_stick: benilla_tarnished::targeting::SwitchStick,
     loadout: Option<benilla_tarnished::weapon::Loadout>,
     ability_blocked: bool,
 }
@@ -232,6 +233,7 @@ fn tick(
         &Transform,
         &ObjectStore,
         Option<&crate::entities::CollisionHeight>,
+        Option<&crate::entities::StandBoxHeight>,
     )>,
     context: (
         Res<SelfGuid>,
@@ -240,8 +242,7 @@ fn tick(
         crate::target::ReactionInputs,
         crate::target::CombatSelect,
         Res<crate::loading_screen::LoadingScreen>,
-        Res<crate::spell::PendingCast>,
-        Res<crate::spell::ActiveChannel>,
+        crate::spell::CombatCasting,
         MessageReader<crate::creature_anim::CastEvent>,
         Option<Res<crate::ui_action::Spells>>,
     ),
@@ -258,8 +259,7 @@ fn tick(
         reactions,
         mut selection,
         loading,
-        pending_cast,
-        channel,
+        mut spell_cast,
         mut casts,
         spells,
     ) = context;
@@ -280,8 +280,8 @@ fn tick(
         .0
         .and_then(|guid| index.0.get(&guid))
         .and_then(|entity| objects.get(*entity).ok());
-    let loadout = self_object.and_then(|(_, _, store, _)| equipped(store, &items, &net));
-    let aura = self_object.is_some_and(|(_, _, store, _)| has_stance(store));
+    let loadout = self_object.and_then(|(_, _, store, ..)| equipped(store, &items, &net));
+    let aura = self_object.is_some_and(|(_, _, store, ..)| has_stance(store));
     if !aura {
         host.ability_blocked = false;
     }
@@ -292,7 +292,7 @@ fn tick(
         && focused
         && !capture.typing
         && !loading.covering()
-        && self_object.is_some_and(|(_, _, s, _)| {
+        && self_object.is_some_and(|(_, _, s, ..)| {
             !s.0.unit_is_dead()
                 && s.0.unit_mount_display_id() == 0
                 && s.0.unit_flags() & (crate::player::UNIT_FLAG_STUNNED | 0x0010_0000) == 0
@@ -302,6 +302,8 @@ fn tick(
     let pad = host.controller.sample(raw);
     let buttons = pad.buttons;
     let pressed = pad.pressed;
+    // Sample even outside lock-on so holding look while pressing R3 does not switch immediately.
+    let switch = host.switch_stick.sample(pad.look);
     let toggle = keys.just_pressed(KeyCode::F8) || pressed & 0x0010 != 0;
     if toggle {
         let spell_id = benilla_formats::skatecraft::SPELL_TARNISHED_STANCE;
@@ -376,9 +378,9 @@ fn tick(
             host.loadout = Some(loadout);
         }
     }
-    let now = std::time::Instant::now();
-    let casting = pending_cast.in_flight(now) || channel.current(now).is_some();
-    let Some((self_id, _, self_store, _)) = self_object else {
+    let mut casting = spell_cast.active();
+    let Some((self_id, self_transform, self_store, collision_height, stand_height)) = self_object
+    else {
         return;
     };
     let lock_candidate = |guid| {
@@ -386,7 +388,7 @@ fn tick(
             .0
             .get(&guid)
             .and_then(|entity| objects.get(*entity).ok())
-            .filter(|(guid, transform, store, _)| {
+            .filter(|(guid, transform, store, ..)| {
                 guid.0 != self_id.0
                     && !store.0.unit_is_dead()
                     && drive.position.distance(transform.translation) < 25.0 / 0.9144
@@ -416,6 +418,26 @@ fn tick(
         } else {
             selection.acquire(|guid| lock_candidate(guid).is_some())
         };
+    }
+    if !lock_pressed {
+        if let (Some(direction), Some((_, current, ..))) =
+            (switch, drive.lock.and_then(lock_candidate))
+        {
+            let candidates = objects.iter().filter_map(|(guid, transform, ..)| {
+                (Some(guid.0) != drive.lock && lock_candidate(guid.0).is_some())
+                    .then_some((guid.0, transform.translation.to_array().into()))
+            });
+            if let Some(guid) = benilla_tarnished::targeting::neighbour(
+                drive.position.to_array().into(),
+                current.translation.to_array().into(),
+                direction,
+                candidates,
+            ) {
+                if let Some(chosen) = selection.choose(guid) {
+                    drive.lock = Some(chosen);
+                }
+            }
+        }
     }
     let locked = drive.lock.and_then(lock_candidate);
     if locked.is_none() {
@@ -450,7 +472,7 @@ fn tick(
         } else {
             pad.movement[1]
         },
-        look_x: pad.look[0],
+        look_x: if locked.is_some() { 0.0 } else { pad.look[0] },
         look_y: pad.look[1],
         mouse_x: if mouse.pressed(MouseButton::Right) || mouse.pressed(MouseButton::Left) {
             motion.delta.x
@@ -466,11 +488,21 @@ fn tick(
         heavy_attack: pad.heavy_attack || combat_key(KeyCode::KeyI),
         guard: buttons & 0x0100 != 0 || combat_key(KeyCode::KeyO),
         dodge: buttons & 0x2000 != 0 || combat_key(KeyCode::Space),
+        jump: buttons & 0x1000 != 0,
+        casting,
         camera_yaw: reference_yaw(cam_yaw),
-        target: locked.map(|(_, t, _, _)| reference_position(t.translation)),
+        target: locked.map(|(_, t, ..)| reference_position(t.translation)),
         dt: TICK as f32,
     };
-    if casting || cast_released {
+    let combat_action =
+        input.light_attack || input.heavy_attack || input.guard || input.dodge || input.jump;
+    if casting && combat_action {
+        // Fork policy: combat actions interrupt spells; movement alone keeps the 60% casting pace.
+        spell_cast.interrupt();
+        casting = false;
+        input.casting = false;
+    }
+    if casting || (cast_released && !combat_action) {
         input.light_attack = false;
         input.heavy_attack = false;
         input.guard = false;
@@ -495,12 +527,21 @@ fn tick(
         input,
         transport: _,
         controller: _,
+        switch_stick: _,
         loadout: _,
         ability_blocked: _,
     } = host;
     let Some(backend) = backend.as_mut() else {
         return;
     };
+    // Standing model bounds follow race and the live render scale (including size auras).
+    // CollisionHeight is already scaled; use it only while the model bounds are unavailable.
+    let height_yards = stand_height
+        .map(|height| height.0 * self_transform.scale.y)
+        .filter(|height| height.is_finite() && *height > 0.0)
+        .or_else(|| collision_height.map(|height| height.0))
+        .unwrap_or(crate::player::CAPSULE_HEIGHT);
+    backend.set_character_height(height_yards * 0.9144);
     backend.set_health(
         self_store.0.unit_health().unwrap_or(1) as f32
             / self_store.0.unit_max_health().unwrap_or(1).max(1) as f32,
@@ -513,7 +554,10 @@ fn tick(
         let solved = backend.state();
         let proposed = Vec3::from_array(solved.position) / 0.9144;
         let mut velocity = (proposed - before) / TICK as f32;
-        velocity.y = 0.0;
+        velocity.y = solved.jump_velocity.unwrap_or(0.0) / 0.9144;
+        if velocity.y > 0.0 {
+            *grounded = false;
+        }
         let center = before + Vec3::Y * (crate::player::CAPSULE_HEIGHT * 0.5);
         let duration = std::time::Duration::from_secs_f64(TICK);
         let resolved = if *grounded {
@@ -532,10 +576,15 @@ fn tick(
             *grounded = step.unsupported.is_none();
             step.center - Vec3::Y * step.unsupported.unwrap_or(0.0)
         } else {
-            let (end, mean) = crate::player::mover::fall_step(
-                *vertical_speed,
-                TICK as f32,
-                crate::player::TERMINAL_VELOCITY,
+            let (end, mean) = solved.jump_velocity.map_or_else(
+                || {
+                    crate::player::mover::fall_step(
+                        *vertical_speed,
+                        TICK as f32,
+                        crate::player::TERMINAL_VELOCITY,
+                    )
+                },
+                |speed| (speed / 0.9144, speed / 0.9144),
             );
             *vertical_speed = end;
             velocity.y = mean;
@@ -543,7 +592,7 @@ fn tick(
                 &collision, &capsule.0, center, velocity, duration,
             );
             if let Some(hit) = collision.cast_mover(&capsule.0, center, Vec3::NEG_Y * 0.05, 0.02) {
-                if hit.normal1.y >= 0.642_788 {
+                if velocity.y <= 0.0 && hit.normal1.y >= 0.642_788 {
                     center.y -= hit.distance;
                     *grounded = true;
                     *vertical_speed = 0.0;
@@ -606,13 +655,13 @@ fn tick(
                 .0
                 .get(&hit.source_guid)
                 .and_then(|e| objects.get(*e).ok());
-            let source_position = source.map_or(drive.position, |(_, t, _, _)| t.translation);
+            let source_position = source.map_or(drive.position, |(_, t, ..)| t.translation);
             let toward = (source_position - drive.position)
                 .with_y(0.0)
                 .normalize_or_zero();
             let forward = Quat::from_rotation_y(drive.yaw) * Vec3::NEG_Z;
             let dot = toward.dot(forward).clamp(-1.0, 1.0);
-            let source_damage = source.map_or(0.0, |(_, _, s, _)| {
+            let source_damage = source.map_or(0.0, |(_, _, s, ..)| {
                 (s.0.unit_min_damage().unwrap_or(0.0) + s.0.unit_max_damage().unwrap_or(0.0)) * 0.5
             });
             let local_damage = (self_store.0.unit_min_damage().unwrap_or(0.0)
@@ -656,7 +705,7 @@ fn tick(
         if let Some(swing) = backend.active_swing() {
             let candidates: Vec<Body> = objects
                 .iter()
-                .filter_map(|(guid, transform, store, height)| {
+                .filter_map(|(guid, transform, store, height, _)| {
                     if guid.0 == self_id.0
                         || store.0.unit_is_dead()
                         || !crate::target::can_attack(

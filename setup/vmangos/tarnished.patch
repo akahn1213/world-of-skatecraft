@@ -132,7 +132,7 @@ index 9ce3685..3237630 100644
      return SPELL_MISS_NONE;
  }
 diff --git a/src/game/Objects/Unit.cpp b/src/game/Objects/Unit.cpp
-index 6b9a89a..d48cc0f 100644
+index 6b9a89a..ef14ce4 100644
 --- a/src/game/Objects/Unit.cpp
 +++ b/src/game/Objects/Unit.cpp
 @@ -1306,7 +1306,7 @@ void Unit::PetOwnerKilledUnit(Unit* pVictim)
@@ -144,7 +144,7 @@ index 6b9a89a..d48cc0f 100644
  {
      damageInfo->attacker = this;
      damageInfo->target = pVictim;
-@@ -1388,7 +1388,44 @@ void Unit::CalculateMeleeDamage(Unit* pVictim, uint32 damage, CalcDamageInfo* da
+@@ -1388,7 +1388,45 @@ void Unit::CalculateMeleeDamage(Unit* pVictim, uint32 damage, CalcDamageInfo* da
      }
  
      // Sets damageInfo->hitOutCome
@@ -179,7 +179,8 @@ index 6b9a89a..d48cc0f 100644
 +        {
 +            switch (answer->outcome)
 +            {
-+                case 0: damageInfo->hitOutCome = MELEE_HIT_MISS; break;
++                case 0: damageInfo->hitOutCome = MELEE_HIT_DODGE; break;
++                case 5: damageInfo->hitOutCome = MELEE_HIT_MISS; break; // server-only stock fallback
 +                case 1: damageInfo->hitOutCome = MELEE_HIT_DODGE; break;
 +                case 2: damageInfo->hitOutCome = MELEE_HIT_PARRY; break;
 +                case 3: damageInfo->hitOutCome = MELEE_HIT_BLOCK; break;
@@ -190,16 +191,33 @@ index 6b9a89a..d48cc0f 100644
  
      switch (damageInfo->hitOutCome)
      {
-@@ -1464,7 +1501,7 @@ void Unit::CalculateMeleeDamage(Unit* pVictim, uint32 damage, CalcDamageInfo* da
+@@ -1464,6 +1502,25 @@ void Unit::CalculateMeleeDamage(Unit* pVictim, uint32 damage, CalcDamageInfo* da
          {
              damageInfo->TargetState = VICTIMSTATE_NORMAL;
              damageInfo->procEx |= PROC_EX_BLOCK;
--            damageInfo->blocked_amount = damageInfo->target->GetShieldBlockValue();
-+            damageInfo->blocked_amount = answer ? answer->absorbed : damageInfo->target->GetShieldBlockValue();
++            if (answer)
++            {
++                // Held ER guard is independent of class, shield skill and damage component count.
++                damageInfo->blocked_amount = std::min(answer->absorbed, damageInfo->totalDamage);
++                uint32 remaining = damageInfo->blocked_amount;
++                for (uint8 i = 0; i < m_weaponDamageCount[damageInfo->attackType]; ++i)
++                {
++                    uint32 blocked = std::min(remaining, damageInfo->subDamage[i].damage);
++                    damageInfo->subDamage[i].damage -= blocked;
++                    remaining -= blocked;
++                }
++                damageInfo->totalDamage -= damageInfo->blocked_amount;
++                damageInfo->cleanDamage += damageInfo->blocked_amount;
++                if (!damageInfo->totalDamage)
++                    damageInfo->TargetState = VICTIMSTATE_BLOCKS;
++                else
++                    damageInfo->procEx |= PROC_EX_NORMAL_HIT;
++                break;
++            }
+             damageInfo->blocked_amount = damageInfo->target->GetShieldBlockValue();
              if (damageInfo->blocked_amount >= damageInfo->subDamage[0].damage)
              {
-                 damageInfo->TargetState = VICTIMSTATE_BLOCKS;
-@@ -1917,7 +1954,7 @@ static ResistanceValues resistValues[] =
+@@ -1917,7 +1974,7 @@ static ResistanceValues resistValues[] =
      {25, 55, 16, 3, 1, 75} // 300
  };
  
@@ -208,7 +226,7 @@ index 6b9a89a..d48cc0f 100644
  {
      if (!pCaster || !IsAlive() || !damage)
          return;
-@@ -1934,25 +1971,9 @@ void Unit::CalculateDamageAbsorbAndResist(SpellCaster* pCaster, SpellSchoolMask
+@@ -1934,25 +1991,9 @@ void Unit::CalculateDamageAbsorbAndResist(SpellCaster* pCaster, SpellSchoolMask
  
      int32 remainingDamage = int32(damage);
  
@@ -237,7 +255,7 @@ index 6b9a89a..d48cc0f 100644
  
      auto HandleSchoolAbsorb = [&]()
      {
-@@ -2202,16 +2223,17 @@ void Unit::CalculateDamageAbsorbAndResist(SpellCaster* pCaster, SpellSchoolMask
+@@ -2202,16 +2243,17 @@ void Unit::CalculateDamageAbsorbAndResist(SpellCaster* pCaster, SpellSchoolMask
      *absorb = damage - remainingDamage - *resist;
  }
  
@@ -257,7 +275,7 @@ index 6b9a89a..d48cc0f 100644
              break;
          default:
              break;
-@@ -2225,15 +2247,85 @@ void Unit::CalculateAbsorbResistBlock(SpellCaster* pCaster, SpellNonMeleeDamage*
+@@ -2225,15 +2267,85 @@ void Unit::CalculateAbsorbResistBlock(SpellCaster* pCaster, SpellNonMeleeDamage*
          damageInfo->damage -= damageInfo->blocked;
      }
  
@@ -344,13 +362,12 @@ index 6b9a89a..d48cc0f 100644
      if (!pVictim->IsAlive())
          return;
  
-@@ -2258,7 +2350,61 @@ void Unit::AttackerStateUpdate(Unit* pVictim, WeaponAttackType attType, bool ext
+@@ -2258,7 +2370,71 @@ void Unit::AttackerStateUpdate(Unit* pVictim, WeaponAttackType attType, bool ext
      }
  
      CalcDamageInfo damageInfo;
 -    CalculateMeleeDamage(pVictim, 0, &damageInfo, attType);
-+    bool deferred = Tarnished::Active(pVictim) && GetWeaponDamageCount(attType) == 1 &&
-+        GetMeleeDamageSchoolMask() == SPELL_SCHOOL_MASK_NORMAL;
++    bool deferred = Tarnished::Active(pVictim); // active defence covers every melee damage school
 +    CalculateMeleeDamage(pVictim, 0, &damageInfo, attType, deferred);
 +    if (deferred)
 +    {
@@ -370,17 +387,28 @@ index 6b9a89a..d48cc0f 100644
 +            damageInfo.cleanDamage += uint32((1.f - multiplier) * damageInfo.totalDamage);
 +            damageInfo.totalDamage = uint32(multiplier * damageInfo.totalDamage);
 +        }
-+        damageInfo.subDamage[0].damage = damageInfo.totalDamage;
++        // Preserve every component (e.g. physical + fire) when applying the offensive roll.
++        uint32 baseTotal = 0;
++        for (uint8 i = 0; i < GetWeaponDamageCount(attType); ++i)
++            baseTotal += damageInfo.subDamage[i].damage;
++        uint32 remaining = damageInfo.totalDamage;
++        for (uint8 i = 0; i < GetWeaponDamageCount(attType); ++i)
++        {
++            uint32 part = i + 1 == GetWeaponDamageCount(attType) ? remaining :
++                (baseTotal ? uint32(uint64(damageInfo.subDamage[i].damage) * damageInfo.totalDamage / baseTotal) : 0);
++            damageInfo.subDamage[i].damage = part;
++            remaining -= part;
++        }
 +        Tarnished::Answer fallback;
 +        fallback.taken = damageInfo.totalDamage;
 +        switch (fallbackOutcome)
 +        {
-+            case MELEE_HIT_MISS: fallback.outcome = 0; break;
++            case MELEE_HIT_MISS: fallback.outcome = 5; break; // not a client iframe
 +            case MELEE_HIT_DODGE: fallback.outcome = 1; break;
 +            case MELEE_HIT_PARRY: fallback.outcome = 2; break;
 +            case MELEE_HIT_BLOCK:
 +                fallback.outcome = 3;
-+                fallback.absorbed = std::min(damageInfo.totalDamage, pVictim->GetShieldBlockValue());
++                fallback.absorbed = std::min(damageInfo.subDamage[0].damage, pVictim->GetShieldBlockValue());
 +                fallback.taken -= fallback.absorbed;
 +                break;
 +            default: break;
@@ -393,7 +421,7 @@ index 6b9a89a..d48cc0f 100644
 +            damageInfo.target = defender;
 +            source->FinishTarnishedMelee(&damageInfo, answer ? answer : &fallback, false);
 +        };
-+        if (Tarnished::Defer(this, pVictim->ToPlayer(), damageInfo.totalDamage, 0, true, finish))
++        if (Tarnished::Defer(this, pVictim->ToPlayer(), damageInfo.totalDamage, GetFirstSchoolInMask(GetMeleeDamageSchoolMask()), true, finish))
 +            return;
 +        FinishTarnishedMelee(&damageInfo, &fallback, false);
 +        return;
@@ -407,7 +435,7 @@ index 6b9a89a..d48cc0f 100644
  
      ProcDamageAndSpell(ProcSystemArguments(damageInfo.target, damageInfo.procAttacker, damageInfo.procVictim, damageInfo.procEx, damageInfo.totalDamage, damageInfo.totalDamage + damageInfo.totalAbsorb + damageInfo.totalResist, damageInfo.attackType));
  
-@@ -8276,6 +8422,7 @@ void Unit::AddToWorld()
+@@ -8276,6 +8452,7 @@ void Unit::AddToWorld()
  void Unit::RemoveFromWorld()
  {
      // cleanup
@@ -415,6 +443,33 @@ index 6b9a89a..d48cc0f 100644
      if (IsInWorld())
      {
          Uncharm();
+@@ -10130,17 +10307,22 @@ void Unit::ScheduleAINotify(uint32 delay)
+ 
+ void Unit::HandleInterruptsOnMovement(bool positionChanged)
+ {
++    Spell* movingChannel = Tarnished::Active(this) ? GetCurrentSpell(CURRENT_CHANNELED_SPELL) : nullptr;
++    uint32 except = movingChannel ? movingChannel->m_spellInfo->Id : 0;
+     if (positionChanged)
+     {
+         // Interrupt spell cast at move
+-        InterruptSpellsWithInterruptFlags(SPELL_INTERRUPT_FLAG_MOVEMENT);
+-        InterruptSpellsWithChannelFlags(AURA_INTERRUPT_MOVING_CANCELS);
+-        RemoveAurasWithInterruptFlags(AURA_INTERRUPT_MOVING_CANCELS | AURA_INTERRUPT_TURNING_CANCELS);
++        if (!Tarnished::Active(this))
++        {
++            InterruptSpellsWithInterruptFlags(SPELL_INTERRUPT_FLAG_MOVEMENT);
++            InterruptSpellsWithChannelFlags(AURA_INTERRUPT_MOVING_CANCELS);
++        }
++        RemoveAurasWithInterruptFlags(AURA_INTERRUPT_MOVING_CANCELS | AURA_INTERRUPT_TURNING_CANCELS, except);
+ 
+         HandleEmoteState(0);
+     }
+     else
+-        RemoveAurasWithInterruptFlags(AURA_INTERRUPT_TURNING_CANCELS);
++        RemoveAurasWithInterruptFlags(AURA_INTERRUPT_TURNING_CANCELS, except);
+ 
+     // Fix bug after 1.11 where client doesn't send stand state update while casting.
+     // Test case: Begin eating or drinking, then start casting Hearthstone and run.
 diff --git a/src/game/Objects/Unit.h b/src/game/Objects/Unit.h
 index 895b393..080d234 100644
 --- a/src/game/Objects/Unit.h
@@ -623,7 +678,7 @@ index e6b748d..87316e8 100644
                  if (caster->IsMounted())
                      return SPELL_FAILED_NOT_MOUNTED;
 diff --git a/src/game/Spells/Spell.cpp b/src/game/Spells/Spell.cpp
-index abd1b5d..15421cf 100644
+index abd1b5d..6a28cfa 100644
 --- a/src/game/Spells/Spell.cpp
 +++ b/src/game/Spells/Spell.cpp
 @@ -907,12 +907,15 @@ void Spell::AddUnitTarget(Unit* pTarget, SpellEffectIndex effIndex)
@@ -683,7 +738,7 @@ index abd1b5d..15421cf 100644
 +                resume.damage = resume.tarnishedUnresisted;
 +            }
 +            else if (answer->outcome == 0)
-+                resume.missCondition = SPELL_MISS_MISS;
++                resume.missCondition = SPELL_MISS_DODGE;
 +            else
 +            {
 +                resume.damage = answer->taken;
@@ -757,7 +812,26 @@ index abd1b5d..15421cf 100644
          m_absorbed = damageInfo.absorb;
  
          pCaster->DealDamageMods(damageInfo.target, damageInfo.damage, &damageInfo.absorb);
-@@ -5302,6 +5375,11 @@ void Spell::RemoveChanneledAuraHolder(SpellAuraHolder* holder, AuraRemoveMode mo
+@@ -4025,7 +4098,8 @@ void Spell::update(uint32 difftime)
+         nowPosZ = m_caster->GetPositionZ();
+         nowO = m_caster->GetOrientation();
+     }
+-    if (m_caster->IsPlayer() && m_timer != 0 && !m_spellInfo->HasAttribute(SPELL_ATTR_EX3_HIDE_CHANNEL_BAR) &&
++    // Fork policy: Tarnished casting permits locomotion (the client applies the 60% pace).
++    if (!Tarnished::Active(m_casterUnit) && m_caster->IsPlayer() && m_timer != 0 && !m_spellInfo->HasAttribute(SPELL_ATTR_EX3_HIDE_CHANNEL_BAR) &&
+        (fabs(m_castPosition.x - nowPosX) > 0.5f || fabs(m_castPosition.y - nowPosY) > 0.5f || fabs(m_castPosition.z - nowPosZ) > 0.5f) &&
+        (m_spellInfo->Effect[EFFECT_INDEX_0] != SPELL_EFFECT_STUCK || !((Player*)m_caster)->m_movementInfo.HasMovementFlag(MOVEFLAG_FALLINGFAR)) &&
+        (m_spellInfo->HasSpellInterruptFlag(SPELL_INTERRUPT_FLAG_MOVEMENT) || m_spellInfo->HasAuraInterruptFlag(AURA_INTERRUPT_MOVING_CANCELS) || m_spellInfo->HasChannelInterruptFlag(AURA_INTERRUPT_MOVING_CANCELS)))
+@@ -4129,7 +4203,7 @@ void Spell::update(uint32 difftime)
+                     }
+                 }
+ 
+-                if (m_caster->IsPlayer())
++                if (m_caster->IsPlayer() && !Tarnished::Active(m_casterUnit))
+                 {
+                     // check if player has jumped before the channeling finished
+                     if (((Player*)m_caster)->m_movementInfo.HasMovementFlag(MOVEFLAG_JUMPING))
+@@ -5302,6 +5376,11 @@ void Spell::RemoveChanneledAuraHolder(SpellAuraHolder* holder, AuraRemoveMode mo
  
  SpellCastResult Spell::CheckCast(bool strict)
  {
@@ -769,6 +843,15 @@ index abd1b5d..15421cf 100644
      if (m_casterUnit)
      {
          SpellCastResult skate = Skatecraft::CheckCast(m_casterUnit, m_spellInfo);
+@@ -5407,7 +5486,7 @@ SpellCastResult Spell::CheckCast(bool strict)
+         {
+             // skip stuck spell to allow use it in falling case and apply spell limitations at movement
+             if ((!m_caster->m_movementInfo.HasMovementFlag(MOVEFLAG_FALLINGFAR) || m_spellInfo->Effect[EFFECT_INDEX_0] != SPELL_EFFECT_STUCK) &&
+-                    (IsAutoRepeat() || m_spellInfo->HasAuraInterruptFlag(AURA_INTERRUPT_STANDING_CANCELS)))
++                    (IsAutoRepeat() || (!Tarnished::Active(m_casterUnit) && m_spellInfo->HasAuraInterruptFlag(AURA_INTERRUPT_STANDING_CANCELS))))
+                 return SPELL_FAILED_MOVING;
+         }
+ 
 diff --git a/src/game/Spells/Spell.h b/src/game/Spells/Spell.h
 index 744c7f4..3970938 100644
 --- a/src/game/Spells/Spell.h

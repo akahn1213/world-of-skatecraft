@@ -15,6 +15,7 @@ use benilla_world::interact::{WorldClick, WorldRightClick};
 use benilla_world::schedule::WorldStage;
 
 mod by_name;
+mod controller;
 // `pub(crate)` for the chest live probe, which drives the mouse's own `click::resolve_go_action`.
 pub(crate) mod click;
 // `pub(crate)` for the hover inspector, which runs the cursor's `cursor_mode::go_highlightable`.
@@ -277,6 +278,7 @@ impl Plugin for TargetPlugin {
             .init_resource::<HoveredObject>()
             .init_resource::<PickOcclusion>()
             .init_resource::<PressPick>()
+            .init_resource::<controller::Interaction>()
             .init_resource::<WorldCursor>()
             .init_resource::<cursor_mode::AttackFork>()
             .init_resource::<CombatFlash>()
@@ -326,7 +328,7 @@ impl Plugin for TargetPlugin {
                     // order is free.
                     crate::spell::targeting::commit_ground_cast_on_click,
                     crate::spell::targeting::commit_object_cast_on_click,
-                    click::act_on_right_click,
+                    (controller::poll, click::act_on_right_click).chain(),
                     // The loot close's guid-scoped deselect.
                     click::clear_target_requests,
                     // The script calls that touch the selection, the cast or the targeting cursor

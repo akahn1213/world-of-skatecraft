@@ -409,6 +409,32 @@ pub(crate) struct CombatSelect<'w, 's> {
 }
 
 impl CombatSelect<'_, '_> {
+    /// Choose an explicit eligible lock neighbour through the same selection/attack seam as TAB.
+    pub(crate) fn choose(&mut self, guid: u64) -> Option<u64> {
+        let candidate = self
+            .scan
+            .build(ScanSide::Enemy)
+            .into_iter()
+            .find(|candidate| candidate.guid == guid)?;
+        if !super::relations::is_selectable(
+            self.scan.store_at(candidate.entity),
+            self.scan.self_guid(),
+        ) {
+            return None;
+        }
+        commit(
+            &mut self.selection,
+            &mut self.seam,
+            candidate.entity,
+            guid,
+            self.scan.store_at(candidate.entity),
+            false,
+            self.scan.self_guid(),
+            true,
+        );
+        Some(guid)
+    }
+
     pub(crate) fn stop_ranged(&mut self) {
         let entity = self.seam.me.single().ok();
         crate::creature_anim::cancel_auto_repeat_local(

@@ -39,9 +39,17 @@ at the same time. Control changes only after the server approves the ordered sta
 visual pose updates cannot enable combat. Equipped weapons select the moveset, including
 one-handed, two-handed, mixed dual wield, paired weapons and fists. RB attacks, RT charges a
 heavy attack, and LB guards with a shield/two-hander or attacks with the off hand (paired
-weapons use their paired chain). Tapping B rolls; holding B sprints. Keyboard equivalents are
+weapons use their paired chain). Tapping B rolls; holding B sprints. **A jumps**, using the
+extracted ER jump arc and animations with WoW terrain collision. Keyboard equivalents are
 U, I, O and Space. F9 (R3) locks a selected eligible enemy or acquires one using TAB priority;
-removal, death, range or occlusion clears the lock.
+removal, death, range or occlusion clears the lock. While locked on, flick the **right stick
+left/right** to select the nearest angular neighbour on that side. Recenter between switches;
+the left stick still moves the character.
+
+**Y interacts** with nearby NPCs or loots a nearby corpse, prioritizing lootable corpses.
+It takes all available money and eligible items (including bind-on-pickup items), without
+changing mouse auto-loot settings. Group-loot restrictions and full bags still apply. This
+also works outside Tarnished stance; chat, loading, targeting a spell and skating suppress it.
 
 The D-pad activates the keyboard number bindings: **Left = 1, Up = 2, Right = 3, Down = 4**.
 Put abilities in those action-bar slots to use them from the controller. This works outside
@@ -53,11 +61,34 @@ Sinister Strike and Eviscerate are disabled in this stance. Heroic Strike, Cleav
 next-swing abilities remain queued until the next successful contact request, replacing that
 swing with the native spell and its costs, effects and threat. The ER motion value carries into
 its weapon damage; additional contacts from that same swing do not duplicate the spell.
-Casts and channels suspend melee input; R1/R2 do not cancel them. WoW casting and ranged
+Casts and channels allow movement at **60% of normal speed** while in Tarnished stance;
+normal speed returns when casting ends. Movement and turning do not interrupt them, while
+other interruption rules still apply. **Attacking, blocking, rolling/dodging or jumping cancels
+the cast/channel and performs the action.** Queued next-swing modifiers remain queued.
+WoW casting and ranged
 animations own the upper body while ER drives the lower body. A new melee action can cut an
 instant spell's animation tail and stops ranged auto-repeat. Ranged weapons continue to fire
 through WoW abilities; R1/R2 use the melee slots or fists. Books/held items provide no off-hand
 weapon. Staves use the two-handed Twinblade moveset; fishing poles fall back to fists.
+
+A raised shield or two-handed guard blocks incoming melee hits regardless of WoW class or
+shield skill, including a druid holding a staff and attacks with elemental damage components.
+The guard still needs stamina and covers the front. Roll iframe avoidance registers as
+**Dodge**; a roll outside its extracted iframe window does not protect you.
+
+Attack hitboxes use **0.30 × character height + weapon range × multiplier**, in metres.
+The multiplier is **1.5 for Greatsword** (WoW two-handed swords, including Ashkandi) and
+**1.1 for other movesets**. Character height comes from the standing model bounds and its live
+render scale, with collision height as a fallback while the model loads. A normal human male's
+roughly 1.84-metre height adds about 0.55 metres; a 2-metre character adds 0.6 metres.
+The source blade samples already include character-relative hand positions; this is an explicit
+gameplay allowance. The near blade endpoint stays in place to avoid gaps at shorter ranges;
+blade height and root motion are preserved. Actual contacts
+still follow the sampled blade path during active hit frames: an extracted endpoint outside
+that window does not itself make a target hittable.
+During active hit frames, a separate fixed 0.6-metre radius around the player's torso
+also catches enemies slightly behind or beside you after a forward lunge. Outside that close
+area, hits still require the blade's path. The close area is also bounded vertically.
 
 The attacker owns swept contacts; the defender answers server-correlated hits in iframe,
 passive dodge/parry, held front guard, hit order. NPC and stock clients retain native defence.
@@ -361,12 +392,15 @@ needs the feature-enabled build and its own generated data.
 | Heavy attack (hold to charge) | RT | I |
 | Guard / off-hand attack | LB | O (hold to guard) |
 | Roll / sprint | Tap / hold B | Tap / hold Space |
+| Jump | A | — |
 | Acquire / lock / unlock an enemy | R3 | F9 |
+| Switch locked target | Flick right stick left / right | — |
+| Interact / take all nearby corpse loot | Y | Right-click (normal loot settings) |
 
 Keep the game focused and chat closed. Wait for `tarnished: server approved equipped
 stance` before testing; a request or visible pose alone does not grant combat ownership.
 The lock clears on target death, removal, range or occlusion. Do not substitute the
-upstream sandbox's bindings: jump, crouch, weapon cycling and grip changes are not exposed
+upstream sandbox's bindings: crouch, weapon cycling and grip changes are not exposed
 by this bridge.
 
 First check locally, then repeat with a second client on the same server, swapping roles.

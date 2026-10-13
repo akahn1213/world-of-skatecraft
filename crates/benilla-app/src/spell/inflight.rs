@@ -239,6 +239,82 @@ const CHANNEL_INTERRUPT_MOVING: u32 = 0x8; // SpellRec+0x5c ChannelInterruptFlag
 #[derive(Resource, Default)]
 pub(crate) struct LocalMoveStart(pub(crate) bool);
 
+/// Fork combat cancellation is sent before the action's hit verdict, then tears down visuals.
+#[derive(Message)]
+pub(crate) struct CombatCastCancel {
+    spell_id: u32,
+    channel: bool,
+}
+
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct CombatCasting<'w> {
+    pending: ResMut<'w, PendingCast>,
+    channel: ResMut<'w, ActiveChannel>,
+    net: Res<'w, NetCommands>,
+    cancelled: MessageWriter<'w, CombatCastCancel>,
+}
+
+impl CombatCasting<'_> {
+    pub(crate) fn active(&self) -> bool {
+        let now = Instant::now();
+        self.pending.in_flight(now) || self.channel.current(now).is_some()
+    }
+
+    pub(crate) fn interrupt(&mut self) {
+        let now = Instant::now();
+        // Queued next-swing modifiers are a separate resource and survive this cancellation.
+        if self.pending.in_flight(now) {
+            if let Some(spell_id) = self.pending.committed(now) {
+                let _ = self.net.0.send(ClientCommand::CancelCast { spell_id });
+                self.pending.clear_if(spell_id);
+                self.cancelled.write(CombatCastCancel {
+                    spell_id,
+                    channel: false,
+                });
+            }
+        }
+        if let Some(spell_id) = self.channel.current(now) {
+            let _ = self
+                .net
+                .0
+                .send(ClientCommand::CancelChannelling { spell_id });
+            self.channel.update(0, now);
+            self.cancelled.write(CombatCastCancel {
+                spell_id,
+                channel: true,
+            });
+        }
+    }
+}
+
+pub(super) fn finish_combat_cancel(
+    mut cancelled: MessageReader<CombatCastCancel>,
+    mut feed: ResMut<CastBarFeed>,
+    self_guid: Res<SelfGuid>,
+    index: Res<GuidIndex>,
+    mut events: MessageWriter<CastEvent>,
+    mut seq: ResMut<PlaySeq>,
+    mut commands: Commands,
+) {
+    for cancel in cancelled.read() {
+        feed.0.push(if cancel.channel {
+            CastBarEdge::ChannelUpdate { remaining_ms: 0 }
+        } else {
+            CastBarEdge::Stop
+        });
+        feed.0.push(CastBarEdge::Interrupted);
+        if let Some(&entity) = self_guid.0.as_ref().and_then(|guid| index.0.get(guid)) {
+            commands.entity(entity).remove::<Casting>();
+            events.write(CastEvent {
+                entity,
+                spell_id: cancel.spell_id,
+                kind: CastEventKind::Fail,
+                seq: seq.next(),
+            });
+        }
+    }
+}
+
 /// The client's local cancel on a move, jump or Esc mid-cast (`AbortCast 0x6e4940`):
 ///
 /// - Esc first stops a running auto-repeat (`SpellStopCasting 0x6e6e80`, then `0x6ea080`),
@@ -255,8 +331,13 @@ pub(crate) struct LocalMoveStart(pub(crate) bool);
 /// into 0x154 `SPELLCAST_INTERRUPTED` (`0x6e1a00`). Our bar edges key on the self `Casting` this
 /// reap removes, so the pair is pushed here. The stock `CastingBarFrame.lua:132-139` then steps
 /// the flash once per OnUpdate after the 1 s hold, followed by the fade.
-pub(super) fn local_self_cancel(mut moved: ResMut<LocalMoveStart>, mut cancel: SelfCancel) {
-    if std::mem::take(&mut moved.0) {
+pub(super) fn local_self_cancel(
+    mut moved: ResMut<LocalMoveStart>,
+    stance: Option<Res<crate::tarnished::Drive>>,
+    mut cancel: SelfCancel,
+) {
+    // Fork policy: only movement interruption is waived; Esc still uses SelfCancel normally.
+    if std::mem::take(&mut moved.0) && !stance.is_some_and(|stance| stance.active) {
         cancel.cancel(false, true);
     }
 }
@@ -561,6 +642,51 @@ mod tests {
         fn run(app: &mut App, moved: bool) {
             app.world_mut().resource_mut::<LocalMoveStart>().0 = moved;
             app.world_mut().run_system_once(local_self_cancel).unwrap();
+        }
+
+        #[test]
+        fn combat_actions_cancel_casts_and_channels_without_spending_next_swing_modifiers() {
+            let (mut app, rx) = harness(HashMap::new());
+            app.add_message::<CombatCastCancel>();
+            let now = Instant::now();
+            app.world_mut()
+                .resource_mut::<PendingCast>()
+                .arm(FIREBALL, now, true);
+            app.world_mut()
+                .resource_mut::<ActiveChannel>()
+                .start(ARCANE_MISSILES, 3000, now);
+            app.world_mut()
+                .resource_mut::<QueuedMeleeSpell>()
+                .arm(HEROIC_STRIKE);
+            mark_casting(&mut app, FIREBALL);
+            app.world_mut()
+                .run_system_once(|mut casting: CombatCasting| {
+                    assert!(casting.active());
+                    casting.interrupt();
+                    assert!(!casting.active());
+                    casting.interrupt(); // held input must not send repeated cancels
+                })
+                .unwrap();
+            assert!(matches!(
+                rx.try_recv(),
+                Ok(ClientCommand::CancelCast { spell_id: FIREBALL })
+            ));
+            assert!(matches!(
+                rx.try_recv(),
+                Ok(ClientCommand::CancelChannelling {
+                    spell_id: ARCANE_MISSILES
+                })
+            ));
+            assert!(rx.try_recv().is_err());
+            assert_eq!(
+                app.world().resource::<QueuedMeleeSpell>().current(),
+                Some(HEROIC_STRIKE)
+            );
+            app.world_mut()
+                .run_system_once(finish_combat_cancel)
+                .unwrap();
+            let me = app.world().resource::<GuidIndex>().0[&10];
+            assert!(app.world().entity(me).get::<Casting>().is_none());
         }
 
         /// Apply the `SpellStopCasting()` calls the VM queued, as `crate::script_calls` does.

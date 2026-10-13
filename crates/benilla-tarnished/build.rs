@@ -61,6 +61,33 @@ fn main() {
                 "mod tests;",
                 "#[allow(clippy::needless_range_loop)]\nmod tests;",
             );
+        let mut text = text;
+        if name == "player" {
+            // Host terrain owns support. Rebase the authored arc without changing its samples,
+            // and let real collision trigger upstream landing/air-attack transitions.
+            text.push_str(
+                r#"
+impl Player {
+    pub fn host_rebase_y(&mut self, y: f32) {
+        let delta = y - self.pos.y;
+        self.jump_base += delta;
+        self.peak += delta;
+        self.pos.y = y;
+    }
+    pub fn host_land(&mut self, inp: &Input, locked: bool) {
+        let jumped = match self.state {
+            State::Act(a) => matches!(a.id, ActionId::Jump(_)),
+            State::Air(a) => a.jumped && !a.falling(),
+            _ => return,
+        };
+        // WoW owns fall damage, including death; only use the reference landing selection.
+        self.peak = self.peak.min(self.pos.y + FALL_DAMAGE_START - 0.01);
+        self.land(self.pos.y, inp, jumped, locked);
+    }
+}
+"#,
+            );
+        }
         std::fs::write(sim.join(format!("{name}.rs")), text).expect("write simulation build copy");
     }
     std::fs::write(

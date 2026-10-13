@@ -72,6 +72,8 @@ fn push_container(bag: u8, slot: u32) -> i64 {
 /// place and `numLootItems` is read once at `OnShow` (`LootFrame.lua:22-37`, `:132`).
 #[derive(Resource, Default)]
 pub(crate) struct LootState {
+    /// Fork Y-button intent, scoped to one source; it never changes the auto-loot CVar.
+    controller_loot: Option<(u64, std::time::Instant)>,
     /// The looted object; `None` when no loot is open.
     source: Option<u64>,
     /// The coin pile in copper, 0 once taken.
@@ -121,6 +123,16 @@ enum LootAction {
 }
 
 impl LootState {
+    pub(crate) fn request_controller_loot(&mut self, source: Option<u64>) {
+        self.controller_loot = source.map(|guid| (guid, std::time::Instant::now()));
+    }
+
+    fn controller_loot_ready(&self) -> bool {
+        self.controller_loot.is_some_and(|(guid, at)| {
+            self.source == Some(guid) && at.elapsed() < std::time::Duration::from_secs(10)
+        })
+    }
+
     /// Opens or replaces the window; quest items ride the same rows at `slot = items.len() + i`.
     pub(crate) fn open(&mut self, source: u64, loot_type: u8, gold: u32, items: Vec<LootItem>) {
         self.source = Some(source);
@@ -184,6 +196,7 @@ impl LootState {
 
     /// Closes the window; queued pushes outlive it.
     pub(crate) fn clear(&mut self) {
+        self.controller_loot = None;
         self.source = None;
         self.gold = 0;
         self.coin_slot = false;
@@ -701,10 +714,39 @@ fn feed_loot(
         snap.source_unit = loot.source().is_some_and(|g| objects.is_unit(g));
         snap
     });
-    if fresh == *last {
+    let controller_loot = loot.controller_loot_ready() && fresh.is_some();
+    if fresh == *last && !controller_loot {
         return;
     }
     script.set_loot(fresh.clone());
+    if controller_loot {
+        let snap = fresh.as_ref().unwrap();
+        if templates_outstanding(&items, snap) {
+            return;
+        }
+        loot.controller_loot = None;
+        // Y explicitly takes all eligible loot, including binding items. Group-roll/master
+        // allocation and inventory capacity remain server-owned; mouse behavior is unchanged.
+        for index in 1..=snap.rows.len() as u32 {
+            match loot.action_at(index) {
+                Some(LootAction::Money) => {
+                    let _ = commands.0.send(ClientCommand::LootMoney);
+                }
+                Some(LootAction::Item {
+                    wire_slot,
+                    display_id,
+                    slot_type,
+                    ..
+                }) if slot_type == slot_type::ALLOW_LOOT => {
+                    let _ = commands
+                        .0
+                        .send(ClientCommand::AutostoreLootItem { slot: wire_slot });
+                    pickup.write(crate::sound::LootPickupSound { display_id });
+                }
+                _ => {}
+            }
+        }
+    }
     match (&*last, &fresh) {
         (None, Some(snap)) => {
             // No window until every template has landed: the copier fires nothing while a query
@@ -717,7 +759,7 @@ fn feed_loot(
             // Auto-loot (`LootConfig`), inverted by a held Shift: every row gets a hand pick's
             // sends, and emptying the window auto-releases it.
             let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
-            if cfg.auto_loot != shift {
+            if !controller_loot && cfg.auto_loot != shift {
                 let mut bind_confirm_fired = false;
                 for index in 1..=snap.rows.len() as u32 {
                     match loot.action_at(index) {
@@ -1457,73 +1499,101 @@ mod tests {
     /// The sweep's one-shot latch (`0x4c21c2`, `0x4c21e2`), over two BoP epics and a white.
     #[test]
     fn the_auto_loot_sweep_raises_exactly_one_bind_confirm() {
-        let (tx, rx) = crossbeam_channel::unbounded();
-        let mut app = App::new();
-        app.add_message::<crate::sound::LootPickupSound>()
-            .init_resource::<LootState>()
-            .init_resource::<crate::ui_chat::ChatLog>()
-            .init_resource::<GroupState>()
-            .init_resource::<NameCache>()
-            .init_resource::<Items>()
-            .init_resource::<ButtonInput<KeyCode>>()
-            .insert_resource(LootConfig {
-                auto_loot: true,
-                ..LootConfig::default()
-            })
-            .insert_resource(NetCommands(tx));
+        for controller in [false, true] {
+            let (tx, rx) = crossbeam_channel::unbounded();
+            let mut app = App::new();
+            app.add_message::<crate::sound::LootPickupSound>()
+                .init_resource::<LootState>()
+                .init_resource::<crate::ui_chat::ChatLog>()
+                .init_resource::<GroupState>()
+                .init_resource::<NameCache>()
+                .init_resource::<Items>()
+                .init_resource::<ButtonInput<KeyCode>>()
+                .insert_resource(LootConfig {
+                    auto_loot: !controller,
+                    ..LootConfig::default()
+                })
+                .insert_resource(NetCommands(tx));
 
-        let mut items = app.world_mut().resource_mut::<Items>();
-        for (entry, name, quality, bonding) in [
-            (FELSTRIKER, "Felstriker", 4, 1),
-            (SECOND_BOP, "Brutality Blade", 4, 1),
-            (TOUGH_JERKY, "Tough Jerky", 1, 0),
-        ] {
-            items.insert_template(
-                entry,
-                Some(ItemInfo {
-                    quality,
-                    bonding,
-                    ..crate::items::test_template(name)
-                }),
+            let mut items = app.world_mut().resource_mut::<Items>();
+            for (entry, name, quality, bonding) in [
+                (FELSTRIKER, "Felstriker", 4, 1),
+                (SECOND_BOP, "Brutality Blade", 4, 1),
+                (TOUGH_JERKY, "Tough Jerky", 1, 0),
+            ] {
+                items.insert_template(
+                    entry,
+                    Some(ItemInfo {
+                        quality,
+                        bonding,
+                        ..crate::items::test_template(name)
+                    }),
+                );
+            }
+
+            // Wire slots 5/6/7 in display order: BoP epic, BoP epic, white.
+            app.world_mut().resource_mut::<LootState>().open(
+                0x42,
+                loot_type::CORPSE,
+                0,
+                vec![
+                    item(5, FELSTRIKER, 1),
+                    item(6, SECOND_BOP, 1),
+                    item(7, TOUGH_JERKY, 1),
+                ],
             );
-        }
-
-        // Wire slots 5/6/7 in display order: BoP epic, BoP epic, white.
-        app.world_mut().resource_mut::<LootState>().open(
-            0x42,
-            loot_type::CORPSE,
-            0,
-            vec![
-                item(5, FELSTRIKER, 1),
-                item(6, SECOND_BOP, 1),
-                item(7, TOUGH_JERKY, 1),
-            ],
-        );
-        let script = UiScript::new().unwrap();
-        script
-            .run(
-                "BIND_CONFIRMS = {}\n\
+            if controller {
+                app.world_mut()
+                    .resource_mut::<LootState>()
+                    .request_controller_loot(Some(0x42));
+                app.world_mut()
+                    .resource_mut::<ButtonInput<KeyCode>>()
+                    .press(KeyCode::ShiftLeft);
+            }
+            let script = UiScript::new().unwrap();
+            script
+                .run(
+                    "BIND_CONFIRMS = {}\n\
                  local f = CreateFrame(\"Frame\")\n\
                  f:RegisterEvent(\"LOOT_BIND_CONFIRM\")\n\
                  f:SetScript(\"OnEvent\", function() tinsert(BIND_CONFIRMS, arg1) end)",
-            )
-            .unwrap();
-        app.insert_non_send_resource(script);
-        app.world_mut().run_system_once(feed_loot).unwrap();
+                )
+                .unwrap();
+            app.insert_non_send_resource(script);
+            app.world_mut().run_system_once(feed_loot).unwrap();
 
-        assert_eq!(
-            confirms(&mut app),
-            vec![1],
-            "one dialog, for the FIRST bind-on-pickup row only"
-        );
-        assert_eq!(pending_confirm(&app), Some(1));
-        assert!(
-            matches!(
-                sent(&rx)[..],
-                [ClientCommand::AutostoreLootItem { slot: 7 }]
-            ),
-            "the white is swept; neither blue is sent"
-        );
+            if controller {
+                assert!(confirms(&mut app).is_empty());
+                assert_eq!(pending_confirm(&app), None);
+                assert!(matches!(
+                    sent(&rx)[..],
+                    [
+                        ClientCommand::AutostoreLootItem { slot: 5 },
+                        ClientCommand::AutostoreLootItem { slot: 6 },
+                        ClientCommand::AutostoreLootItem { slot: 7 },
+                    ]
+                ));
+                app.world_mut().run_system_once(feed_loot).unwrap();
+                assert!(
+                    sent(&rx).is_empty(),
+                    "controller auto-loot only sweeps once"
+                );
+            } else {
+                assert_eq!(
+                    confirms(&mut app),
+                    vec![1],
+                    "one dialog, for the FIRST bind-on-pickup row only"
+                );
+                assert_eq!(pending_confirm(&app), Some(1));
+                assert!(
+                    matches!(
+                        sent(&rx)[..],
+                        [ClientCommand::AutostoreLootItem { slot: 7 }]
+                    ),
+                    "the white is swept; neither blue is sent"
+                );
+            }
+        }
     }
 
     fn item(slot: u8, entry: u32, count: u32) -> LootItem {

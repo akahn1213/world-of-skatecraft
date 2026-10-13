@@ -25,7 +25,8 @@ impl InputBuffer {
         let buttons = u8::from(input.light_attack)
             | (u8::from(input.heavy_attack) << 1)
             | (u8::from(input.guard) << 2)
-            | (u8::from(input.dodge) << 3);
+            | (u8::from(input.dodge) << 3)
+            | (u8::from(input.jump) << 4);
         if buttons != self.sampled {
             // Preserve control transitions through render frames that contain no simulation tick.
             if self.edges.len() < 64 {
@@ -47,6 +48,7 @@ impl InputBuffer {
             heavy_attack: self.held & 2 != 0,
             guard: self.held & 4 != 0,
             dodge: self.held & 8 != 0,
+            jump: self.held & 16 != 0,
             dt: TICK as f32,
             mouse_x: mouse[0],
             mouse_y: mouse[1],
@@ -166,6 +168,19 @@ impl Combat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jump_tap_survives_render_frames_without_a_simulation_tick() {
+        let mut input = InputBuffer::default();
+        input.sample(BackendInput {
+            jump: true,
+            ..Default::default()
+        });
+        input.sample(BackendInput::default());
+        assert!(input.tick().jump);
+        assert!(!input.tick().jump);
+        assert!(!input.tick().jump);
+    }
 
     #[test]
     fn mouse_motion_accumulates_without_ticks_and_is_not_repeated_by_catchup() {

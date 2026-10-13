@@ -638,7 +638,8 @@ fn send_spell_cast(
             .and_then(|s| s.0.unit_level())
             .unwrap_or(0);
         let cast_time_ms = spells.map_or(0, |s| s.cast_time_ms(d, caster_level, spell_mods));
-        if validator::cast_moving_refusal(ctx.self_move_flags, cast_time_ms, def) {
+        // Fork policy: Tarnished spells may start and continue during locomotion.
+        if !stance && validator::cast_moving_refusal(ctx.self_move_flags, cast_time_ms, def) {
             debug!("ui_action: cast {spell_id} refused locally — moving (0x2e)");
             cast_errors.push_local(spell_id, 0x2e);
             return;

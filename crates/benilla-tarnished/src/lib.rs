@@ -20,6 +20,7 @@ pub mod defence;
 pub mod profile;
 pub mod runtime;
 pub mod scale;
+pub mod targeting;
 pub mod weapon;
 #[cfg(feature = "er-data")]
 include!(concat!(env!("OUT_DIR"), "/sim_entry.rs"));
@@ -68,6 +69,8 @@ pub trait Backend: Send + Sync {
     fn step(&mut self, input: BackendInput);
     /// The blade's swept path this tick, if an attack is in its active frames.
     fn active_swing(&self) -> Option<attack::Swing>;
+    /// Host character's standing model height in metres, including its live render scale.
+    fn set_character_height(&mut self, _height: f32) {}
     /// The motion value of the attack currently in its active frames, for damage scaling.
     fn active_motion_value(&self) -> Option<f32>;
     fn active_stamina_damage(&self) -> Option<f32>;
@@ -135,6 +138,8 @@ pub struct BackendState {
     pub position: [f32; 3],
     pub yaw: f32,
     pub stamina: f32,
+    /// Authored jump vertical velocity in metres/second; otherwise the host applies gravity.
+    pub jump_velocity: Option<f32>,
     /// Changes for every attack action and every separate active window of a multi-hit action.
     pub contact_window: u64,
     pub weapon_class: u8,
@@ -158,6 +163,9 @@ pub struct BackendInput {
     pub heavy_attack: bool,
     pub guard: bool,
     pub dodge: bool,
+    pub jump: bool,
+    /// Fork policy: casts/channels retain locomotion at 60% speed.
+    pub casting: bool,
     pub camera_yaw: f32,
     pub target: Option<[f32; 3]>,
     /// Host timestamp delta; the reference backend still advances exactly one 60 Hz tick per call.

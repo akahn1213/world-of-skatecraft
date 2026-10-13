@@ -371,10 +371,11 @@ pub(super) fn control(
             player.horiz_vel = drive.velocity.with_y(0.0);
             player.vel_y = drive.velocity.y;
             let was_falling = player.move_flags & move_flags::FALLING != 0;
+            let jumped = drive.falling && !was_falling && drive.velocity.y > 0.0;
             if drive.falling && !was_falling {
                 player.airborne_since = Some(time.elapsed_secs());
                 player.fall_start_y = before.y;
-                player.jump_zspeed = 0.0;
+                player.jump_zspeed = if jumped { drive.velocity.y } else { 0.0 };
             }
             let fall_time = player
                 .airborne_since
@@ -416,7 +417,7 @@ pub(super) fn control(
                 flags,
                 0.0,
                 movement_net::ArcEdges {
-                    jumped: false,
+                    jumped,
                     wire_launch: false,
                     air_nudged: false,
                     landed: was_falling && !drive.falling,
