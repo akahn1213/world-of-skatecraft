@@ -127,6 +127,10 @@ fn on_attacker_state(
     tarnished: Option<Res<crate::tarnished::Drive>>,
     remote_tarnished: Query<(), With<crate::tarnished::replication::ReplicatedTarnished>>,
     mut commands: Commands,
+    skating: (
+        Option<Res<crate::skate::SkateDrive>>,
+        Query<(), With<crate::skate::replication::ReplicatedSkating>>,
+    ),
 ) {
     if let SessionEvent::AttackerState(s) = ev {
         // Native attacks against us already played their windup before our defence answer.
@@ -139,6 +143,13 @@ fn on_attacker_state(
                 .0
                 .get(&s.attacker)
                 .is_some_and(|entity| remote_tarnished.contains(*entity));
+        let at_contact = at_contact
+            || (self_guid.0 == Some(s.attacker)
+                && skating.0.as_ref().is_some_and(|drive| drive.active))
+            || index
+                .0
+                .get(&s.attacker)
+                .is_some_and(|e| skating.1.contains(*e));
         if at_contact {
             if let Some(entity) = index.0.get(&s.attacker) {
                 commands.entity(*entity).remove::<super::SpellRelease>();

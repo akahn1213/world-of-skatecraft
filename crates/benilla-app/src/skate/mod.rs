@@ -5,6 +5,7 @@
 //! is drawn under it ([`board`]). The controller is an Xbox-style pad, read by the engine itself.
 
 mod board;
+mod combat;
 mod export;
 mod profession;
 mod rails;
@@ -74,6 +75,9 @@ pub(crate) struct SkateDrive {
     pub(crate) yaw: f32,
     /// Horizontal speed, yd/s.
     pub(crate) speed: f32,
+    pub(crate) contacts: Vec<benilla_skate::Motion>,
+    pub(crate) reset_contacts: bool,
+    pub(crate) flip: benilla_skate::Flip,
     /// The engine's own follow camera, Bevy world.
     pub(crate) camera: Option<Transform>,
     /// Ride with the engine's camera rather than our follow camera (`K` toggles).
@@ -398,6 +402,9 @@ fn stop(host: &mut Host, drive: &mut SkateDrive, pose: &mut SkatePose) {
         info!("skate: off the board");
     }
     drive.active = false;
+    drive.contacts.clear();
+    drive.reset_contacts = true;
+    drive.flip = Default::default();
     drive.camera = None;
     pose.active = false;
 }
@@ -407,6 +414,40 @@ fn present(frame: Frame, origin: Vec3, drive: &mut SkateDrive, pose: &mut SkateP
     drive.pos = from_skate(frame.root.w_axis.truncate(), origin);
     let flat = Vec3::new(frame.velocity.x, 0.0, frame.velocity.z);
     drive.speed = flat.length() / METERS_PER_YARD;
+    let rotation = |name: &str| {
+        frame
+            .names
+            .iter()
+            .position(|n| n == name)
+            .and_then(|i| frame.bones.get(i))
+            .map(|m| m.to_scale_rotation_translation().1)
+    };
+    let relative = rotation("HIPS")
+        .zip(rotation("SKATEBOARD_ROOT"))
+        .map(|(hips, board)| hips.inverse() * board);
+    let airborne = sound::Phase::of(&frame.state) == sound::Phase::Air;
+    let time = f64::from(frame.sample_ms) / 1000.;
+    let flipping = drive.flip.sample(airborne, relative, time);
+    // Retain each worker sample so a flip/catch between render frames uses its contact state.
+    if matches!(
+        sound::Phase::of(&frame.state),
+        sound::Phase::Ground | sound::Phase::Slide | sound::Phase::Air | sound::Phase::Grind(_)
+    ) {
+        if drive.contacts.len() < 64 {
+            drive.contacts.push(benilla_skate::Motion {
+                position: drive.pos * METERS_PER_YARD,
+                speed: flat.length(),
+                time,
+                radius: 0.6,
+                height: 1.8,
+                flipping,
+            });
+        }
+    } else {
+        drive.contacts.clear();
+        drive.reset_contacts = true;
+    }
+
     let heading = if drive.moving() {
         flat
     } else {
@@ -747,6 +788,7 @@ fn start(
 
 pub(crate) fn plugin(app: &mut App) {
     replication::register(app);
+    combat::register(app);
     score::register(app);
     app.init_resource::<Host>()
         .init_resource::<SkateDrive>()

@@ -756,6 +756,8 @@ pub(crate) static CAST_TRACE: std::sync::LazyLock<bool> =
 #[derive(Debug)]
 pub(crate) enum ClientCommand {
     /// A single wake token drains the freshest visual sample, not an unbounded pose queue.
+    /// Ordered contacts must never enter the replaceable pose mailbox.
+    SkateImpact(benilla_protocol::skate::Impact),
     Skate(std::sync::Arc<std::sync::Mutex<crate::skate::replication::Mailbox>>),
     TarnishedPose(std::sync::Arc<std::sync::Mutex<crate::tarnished::replication::Mailbox>>),
     Tarnished(Vec<u8>),

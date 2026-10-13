@@ -35,6 +35,8 @@ pub(super) struct Link {
     entered: bool,
     supported: bool,
     acknowledged: bool,
+    combat_supported: bool,
+    contact_sequence: u32,
     attempts: u8,
     next_hello: f64,
     last_send: f64,
@@ -45,6 +47,22 @@ pub(super) struct Link {
 }
 
 impl Link {
+    pub(super) fn impact(&mut self, target: u64, speed: f32, flipping: bool, net: &NetCommands) {
+        if !self.acknowledged || !self.combat_supported || !self.active {
+            return;
+        }
+        self.contact_sequence = self.contact_sequence.wrapping_add(1);
+        let _ = net.0.send(ClientCommand::SkateImpact(
+            benilla_protocol::skate::Impact {
+                ride: self.ride,
+                sequence: self.contact_sequence,
+                target,
+                speed_milli: (speed * 1000.).round().clamp(2000., 100_000.) as u32,
+                flipping,
+            },
+        ));
+    }
+
     fn publish(&self, body: Vec<u8>, commands: &NetCommands) {
         let mut slot = self.mailbox.lock_recover();
         slot.payload = Some(body);
@@ -212,6 +230,7 @@ fn on_edge(
             link.mailbox.lock_recover().payload = None;
             link.entered = true;
             link.supported = false;
+            link.combat_supported = false;
             link.acknowledged = false;
             link.attempts = 0;
             link.next_hello = time.elapsed_secs_f64();
@@ -229,6 +248,7 @@ fn on_edge(
             link.mailbox.lock_recover().payload = None;
             link.entered = false;
             link.supported = false;
+            link.combat_supported = false;
             link.acknowledged = false;
         }
         _ => {}
@@ -237,6 +257,13 @@ fn on_edge(
 
 fn on_capabilities(In(ev): In<SessionEvent>, mut link: ResMut<Link>) {
     if let SessionEvent::Chat(message) = ev {
+        if link.entered
+            && message.language == benilla_protocol::messages::LANGUAGE_ADDON
+            && message.sender_guid == 0
+            && message.text == "SKATECRAFT\tCOMBAT\t1"
+        {
+            link.combat_supported = true;
+        }
         if link.entered
             && message.language == benilla_protocol::messages::LANGUAGE_ADDON
             && message.sender_guid == 0

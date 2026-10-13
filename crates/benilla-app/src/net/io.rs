@@ -871,6 +871,9 @@ fn writer_loop(
                             None => Ok(()),
                         }
                     }
+                    ClientCommand::SkateImpact(hit) => match hit.encode() {
+                        Ok(body) => w.skate(&body), Err(error) => Err(error.into()),
+                    },
                     ClientCommand::Skate(slot) => {
                         match slot.lock_recover().take() {
                             Some(body) => w.skate(&body),

@@ -522,6 +522,7 @@ dependencies = [
  "benilla-controller",
  "benilla-formats",
  "benilla-protocol",
+ "benilla-skate",
  "benilla-srp",
  "benilla-tarnished",
  "benilla-ui",
@@ -645,6 +646,13 @@ dependencies = [
  "rand 0.8.6",
  "sha1",
  "strum",
+]
+
+[[package]]
+name = "benilla-skate"
+version = "0.2.0"
+dependencies = [
+ "glam 0.30.10",
 ]
 
 [[package]]

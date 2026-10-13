@@ -47,6 +47,74 @@ class TarnishedServerTests(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.scratch)
 
+    def test_actual_cpp_skating_damage_and_contact_limits(self):
+        cpp = added_file("src/game/Skatecraft.cpp")
+        code = r"""
+#include <cassert>
+#include <cmath>
+#include <algorithm>
+#include <cstdint>
+#include <unordered_map>
+using uint32 = uint32_t; using uint64 = uint64_t;
+constexpr uint32 SKILL_MAX = 300;
+namespace WorldTimer { uint32 getMSTimeDiff(uint32 a, uint32 b) { return b-a; } }
+struct VisualState {
+    bool hasContact = false;
+    uint32 contactSequence = 0, contactBudgetTime = 0;
+    float contactTokens = 16.f;
+    std::unordered_map<uint64, uint32> contactTimes;
+};
+"""
+        for marker in ["static uint32 CollisionDamage(", "static bool ContactOrder("]:
+            code += definition(cpp, marker) + "\n"
+        code += r"""
+int main() {
+    assert(CollisionDamage(5, 6000, false) == 15);
+    assert(CollisionDamage(300, 6000, false) == 1500);
+    assert(CollisionDamage(5, 12000, false) == 30);
+    assert(CollisionDamage(300, 12000, false) == 3000);
+    assert(CollisionDamage(300, 100000, false) == 3000);
+    assert(CollisionDamage(301, 12000, false) == 3000);
+    assert(CollisionDamage(300, 12000, true) == 6000);
+    assert(CollisionDamage(5, 12000, true) == 60);
+    assert(CollisionDamage(0, 12000, true) == 0);
+    assert(CollisionDamage(300, 2000, true) == 0);
+    assert(CollisionDamage(300, 0, true) == 0);
+    assert(CollisionDamage(300, 100001, true) == 0);
+    for (uint32 skill = 1; skill <= 300; ++skill) {
+        uint32 previous = 0;
+        for (uint32 speed = 0; speed <= 20000; speed += 100) {
+            uint32 damage = CollisionDamage(skill, speed, false);
+            assert(damage >= previous && damage <= 3000);
+            assert(CollisionDamage(skill, speed, true) == 2*damage);
+            assert(damage >= CollisionDamage(skill-1, speed, false));
+            previous = damage;
+        }
+    }
+    VisualState s;
+    assert(ContactOrder(s, 1, 100, 0));
+    assert(!ContactOrder(s, 1, 200, 1)); // duplicate sequence, different target
+    assert(!ContactOrder(s, 0, 200, 1)); // old sequence
+    assert(!ContactOrder(s, 2, 100, 999)); // same target too soon
+    assert(ContactOrder(s, 2, 100, 1000));
+    assert(ContactOrder(s, 3, 200, 1000)); // several enemies in one pass
+    s = VisualState{};
+    for (uint32 i=1; i<=16; ++i) assert(ContactOrder(s, i, i, 0));
+    assert(!ContactOrder(s, 17, 17, 0)); // burst is bounded
+    assert(ContactOrder(s, 17, 17, 32)); // budget replenishes
+    s = VisualState{};
+    assert(ContactOrder(s, UINT32_MAX, 1, UINT32_MAX-499));
+    assert(!ContactOrder(s, 0, 1, 499)); // clock wrap still respects cooldown
+    assert(ContactOrder(s, 0, 1, 500)); // sequence and clock wrap
+}
+"""
+        source = self.scratch / "skate_combat.cpp"
+        source.write_text(code)
+        binary = source.with_suffix("")
+        subprocess.run(["g++", "-std=c++14", "-Wall", "-Wextra", "-Werror",
+                        str(source), "-o", str(binary)], check=True)
+        subprocess.run([str(binary)], check=True)
+
     def test_actual_cpp_equipment_spell_policy_and_queued_replacement(self):
         cpp = added_file("src/game/Tarnished.cpp")
         code = r"""

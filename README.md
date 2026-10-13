@@ -196,6 +196,28 @@ abilities, buffs to drag onto your action bar; they work only while you are on t
 The profession needs the patched server that the Linux setup builds (the Windows setup still runs
 the stock server). On another server **J** just hops on and off the board.
 
+### Skating into enemies
+
+Ride into an attackable enemy to deal physical damage. Damage scales with your actual
+**Skateboarding skill**, using skill / 5 as the equivalent character level:
+
+| Skateboarding skill | Equivalent level | Moderate speed (6 m/s) | Fast speed (12+ m/s) |
+|---|---|---|---|
+| 5 | 1 | 15 | 30 |
+| 150 | 30 | 688 | 1,376 |
+| 300 | 60 | 1,500 | 3,000 |
+
+These are normal hits before armor and other defenses. Damage increases smoothly between
+skill levels and speeds, starts above 2 m/s, and stops increasing at 12 m/s. A flip trick
+at contact makes the hit a **2× critical**, up to 6,000 at skill 300. The client measures live
+board rotation relative to the skater while airborne; a normal ollie or a previously completed
+trick does not qualify. There is one hit per enemy per pass: move clear before hitting it again,
+with a minimum one-second interval per enemy. Swept collision detection catches fast passes
+between frames. Native threat, kill credit, loot and damage feedback apply.
+
+This requires the updated client and a server rebuilt with this branch's Skatecraft and
+Tarnished patches. Tarnished stance itself is not required to deal skating damage.
+
 ### Multiplayer skating
 
 Clients with this fork's skating relay support can display nearby players' character and board

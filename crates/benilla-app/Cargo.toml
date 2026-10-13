@@ -19,6 +19,7 @@ er-data = ["benilla-tarnished/er-data"]
 trace_chrome = ["bevy/trace_chrome"]
 
 [dependencies]
+benilla-skate = { path = "../benilla-skate" }
 anyhow.workspace = true
 benilla-controller = { path = "../benilla-controller" }
 # The EditBox clipboard, on the main thread as NSPasteboard requires; bevy_egui's 3.x.

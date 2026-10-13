@@ -1,4 +1,4 @@
-//! Opt-in skating visual extension; it never replaces the ordinary movement protocol.
+//! Opt-in skating poses and collision reports; ordinary movement remains authoritative.
 
 use std::collections::HashSet;
 use std::io::{self, Read};
@@ -34,6 +34,31 @@ pub struct Snapshot {
 pub enum Packet {
     Hello,
     Snapshot(Snapshot),
+    Impact(Impact),
+}
+
+/// A contact measured by the skater. The server supplies skill, damage and eligibility.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Impact {
+    pub ride: u32,
+    pub sequence: u32,
+    pub target: u64,
+    pub speed_milli: u32,
+    pub flipping: bool,
+}
+impl Impact {
+    pub fn encode(self) -> io::Result<Vec<u8>> {
+        if self.target == 0 || !(2000..=100_000).contains(&self.speed_milli) {
+            return Err(invalid());
+        }
+        let mut out = vec![1, 2];
+        out.extend(self.ride.to_le_bytes());
+        out.extend(self.sequence.to_le_bytes());
+        out.extend(self.target.to_le_bytes());
+        out.extend(self.speed_milli.to_le_bytes());
+        out.push(u8::from(self.flipping));
+        Ok(out)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -138,6 +163,25 @@ pub fn decode(body: &[u8]) -> io::Result<Packet> {
         return Ok(Packet::Hello);
     }
     let mut r = body;
+    if body.starts_with(&[1, 2]) {
+        r = &body[2..];
+        let impact = Impact {
+            ride: u32::from_le_bytes(take(&mut r)?),
+            sequence: u32::from_le_bytes(take(&mut r)?),
+            target: u64::from_le_bytes(take(&mut r)?),
+            speed_milli: u32::from_le_bytes(take(&mut r)?),
+            flipping: match take::<1>(&mut r)?[0] {
+                0 => false,
+                1 => true,
+                _ => return Err(invalid()),
+            },
+        };
+        if !r.is_empty() {
+            return Err(invalid());
+        }
+        impact.encode()?;
+        return Ok(Packet::Impact(impact));
+    }
     if take::<2>(&mut r)? != [1, 1] {
         return Err(invalid());
     }
@@ -201,13 +245,52 @@ pub fn decode_relay(body: &[u8]) -> io::Result<Relay> {
             receipt_ms,
             snapshot,
         }),
-        Packet::Hello => Err(invalid()),
+        Packet::Hello | Packet::Impact(_) => Err(invalid()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contact_roundtrip_rejects_malformed_or_relayed_hits() {
+        let hit = Impact {
+            ride: 7,
+            sequence: u32::MAX,
+            target: 123,
+            speed_milli: 6000,
+            flipping: true,
+        };
+        let wire = hit.encode().unwrap();
+        assert_eq!(wire.len(), 23);
+        assert_eq!(decode(&wire).unwrap(), Packet::Impact(hit));
+        for end in 0..wire.len() {
+            assert!(decode(&wire[..end]).is_err());
+        }
+        let mut bad = wire.clone();
+        bad.push(0);
+        assert!(decode(&bad).is_err());
+        let mut bad = wire.clone();
+        bad[22] = 2;
+        assert!(decode(&bad).is_err());
+        let mut relay = vec![0; 12];
+        relay.extend(&wire);
+        assert!(decode_relay(&relay).is_err());
+        for speed_milli in [0, 1999, 100_001, u32::MAX] {
+            assert!(Impact { speed_milli, ..hit }.encode().is_err());
+            let mut bad = wire.clone();
+            bad[18..22].copy_from_slice(&speed_milli.to_le_bytes());
+            assert!(decode(&bad).is_err());
+        }
+        assert!(Impact { target: 0, ..hit }.encode().is_err());
+        assert!(Impact {
+            flipping: false,
+            ..hit
+        }
+        .encode()
+        .is_ok());
+    }
 
     fn snapshot() -> Snapshot {
         Snapshot {
