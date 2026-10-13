@@ -11,6 +11,8 @@ pub const SKILL_SKATEBOARDING: u32 = 760;
 
 /// The ride: an aura on us while we are on the board.
 pub const SPELL_SUMMON_SKATEBOARD: u32 = 60001;
+/// Toggle the equipment-driven Tarnished combat stance; shared with Tarnished.h.
+pub const SPELL_TARNISHED_STANCE: u32 = 60006;
 /// Higher pop while the aura lasts.
 pub const SPELL_OLLIE_BOOST: u32 = 60002;
 /// A one-second aura; its arrival is one forward burst.
@@ -46,12 +48,25 @@ struct SkateSpell {
     visual: u32,
     /// SpellCastTimes.dbc
     cast_time: u32,
-    /// SpellDuration.dbc
-    duration: u32,
+    /// SpellDuration.dbc row ID, not seconds (row 21 has duration -1: permanent).
+    duration_index: u32,
     cooldown_ms: u32,
 }
 
-const SPELLS: [SkateSpell; 5] = [
+const SPELLS: [SkateSpell; 6] = [
+    SkateSpell {
+        id: SPELL_TARNISHED_STANCE,
+        name: "Tarnished Stance",
+        description:
+            "Fight with your equipped weapons using action combat. Cast again or cancel \
+                      the aura to leave the stance. Spells and next-swing attacks remain available.",
+        aura: "Using Tarnished combat.",
+        icon: ICON_SPRINT,
+        visual: 0,
+        cast_time: 1,
+        duration_index: 21, // Permanent until cancelled; not a 21-second duration.
+        cooldown_ms: 0,
+    },
     SkateSpell {
         id: SPELL_SUMMON_SKATEBOARD,
         name: "Summon Skateboard",
@@ -61,7 +76,7 @@ const SPELLS: [SkateSpell; 5] = [
         icon: ICON_MECHASTRIDER,
         visual: 1703, // a mount summon: the cast and the puff
         cast_time: 16,
-        duration: 21,
+        duration_index: 21,
         cooldown_ms: 0,
     },
     SkateSpell {
@@ -72,7 +87,7 @@ const SPELLS: [SkateSpell; 5] = [
         icon: ICON_BOOTS,
         visual: 63, // Slow Fall
         cast_time: 1,
-        duration: 2,
+        duration_index: 2,
         cooldown_ms: 120_000,
     },
     SkateSpell {
@@ -83,7 +98,7 @@ const SPELLS: [SkateSpell; 5] = [
         icon: ICON_FLARE,
         visual: 1223, // Goblin Rocket Boots
         cast_time: 1,
-        duration: 36,
+        duration_index: 36,
         cooldown_ms: 30_000,
     },
     SkateSpell {
@@ -94,7 +109,7 @@ const SPELLS: [SkateSpell; 5] = [
         icon: ICON_SPRINT,
         visual: 6, // Sprint
         cast_time: 1,
-        duration: 2,
+        duration_index: 2,
         cooldown_ms: 180_000,
     },
     SkateSpell {
@@ -105,7 +120,7 @@ const SPELLS: [SkateSpell; 5] = [
         icon: ICON_MOONGLOW,
         visual: 6768, // Levitate
         cast_time: 1,
-        duration: 18,
+        duration_index: 18,
         cooldown_ms: 300_000,
     },
 ];
@@ -173,7 +188,7 @@ fn spell_rows() -> Vec<Row> {
             f[21] = if s.cast_time > 1 { 0x0F } else { 0 };
             f[28] = 1; // base level
             f[29] = 1; // spell level
-            f[30] = s.duration;
+            f[30] = s.duration_index;
             f[36] = 1; // range: self
             f[58] = u32::MAX; // equipped item class: none
             f[61] = SPELL_EFFECT_APPLY_AURA;
@@ -256,6 +271,40 @@ fn append(bytes: &[u8], rows: Vec<Row>) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tarnished_is_a_named_cancellable_self_aura_for_any_class() {
+        let row = spell_rows()
+            .into_iter()
+            .find(|row| row.fields[0] == SPELL_TARNISHED_STANCE)
+            .unwrap();
+        assert_eq!(row.fields[18], 1); // instant
+        assert_eq!(row.fields[30], 21); // until cancelled
+        assert_eq!(row.fields[61], SPELL_EFFECT_APPLY_AURA);
+        assert_eq!(row.fields[82], TARGET_UNIT_CASTER);
+        assert_eq!(row.fields[58], u32::MAX); // no item requirement
+        assert!(row.strings.contains(&(120, "Tarnished Stance")));
+        let direct_melee = crate::SpellDisplay {
+            damage_class: 2,
+            ..Default::default()
+        };
+        assert!(direct_melee.tarnished_melee_ability());
+        for attributes in [0x4, 0x400] {
+            assert!(!crate::SpellDisplay {
+                damage_class: 2,
+                attributes,
+                ..Default::default()
+            }
+            .tarnished_melee_ability());
+        }
+        for damage_class in [0, 1, 3] {
+            assert!(!crate::SpellDisplay {
+                damage_class,
+                ..Default::default()
+            }
+            .tarnished_melee_ability());
+        }
+    }
 
     fn table(fields: usize, ids: &[u32]) -> Vec<u8> {
         let mut out = b"WDBC".to_vec();

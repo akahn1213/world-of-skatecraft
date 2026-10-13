@@ -126,6 +126,7 @@ fn on_attacker_state(
     mut play_seq: ResMut<PlaySeq>,
     tarnished: Option<Res<crate::tarnished::Drive>>,
     remote_tarnished: Query<(), With<crate::tarnished::replication::ReplicatedTarnished>>,
+    mut commands: Commands,
 ) {
     if let SessionEvent::AttackerState(s) = ev {
         let at_contact = (self_guid.0 == Some(s.attacker)
@@ -134,6 +135,11 @@ fn on_attacker_state(
                 .0
                 .get(&s.attacker)
                 .is_some_and(|entity| remote_tarnished.contains(*entity));
+        if at_contact {
+            if let Some(entity) = index.0.get(&s.attacker) {
+                commands.entity(*entity).remove::<super::SpellUpperBody>();
+            }
+        }
         attacker_state(
             s,
             &index,

@@ -103,6 +103,12 @@ pub trait Backend: Send + Sync {
     fn set_grounded(&mut self, _grounded: bool) {}
     /// Feedback for a fresh contact batch; the host owns per-target contact accounting.
     fn contact(&mut self) {}
+    /// Apply equipped gear without refilling health or stamina; cancel any old-weapon swing.
+    fn equip(&mut self, _loadout: weapon::Loadout) -> Result<(), String> {
+        Ok(())
+    }
+    /// Casts/channels own the hands until completion; discard buffered melee and guard input.
+    fn suspend_attacks(&mut self) {}
     /// Extracted 30-fps animation frames for diagnosing contact against the visible swing.
     fn attack_timing(&self) -> Option<AttackTiming> {
         None

@@ -122,8 +122,8 @@ pub fn map_weapon(class: u32, subclass: u32, hand: Hand) -> ErWeapon {
         s::MACE_1H => E::Club,
         s::MACE_2H => E::GreatHammer,
         s::POLEARM => E::Halberd,
-        // A WoW staff is a two-handed pole/blunt caster arm; the nearest heavy two-hander.
-        s::STAFF => E::ColossalWeapon,
+        // Fork mapping: staff swings use the twinblade's two-handed pole motions.
+        s::STAFF => E::Twinblade,
         s::FIST => E::Fist,
         // Bows, guns, crossbows, wands, thrown, fishing poles: no melee moveset — bare fists.
         s::BOW | s::GUN | s::CROSSBOW | s::WAND | s::THROWN | s::FISHING_POLE => E::Fist,
@@ -143,7 +143,9 @@ pub fn map_offhand(class: Option<u32>, subclass: Option<u32>, hand: Hand) -> Off
     match (class, subclass) {
         (None, _) => Offhand::Empty,
         (Some(wow_class::ARMOR), Some(wow_subclass::SHIELD)) => Offhand::Shield,
-        (Some(c), Some(sub)) => Offhand::Weapon(map_weapon(c, sub, hand)),
+        (Some(wow_class::WEAPON), Some(sub)) => {
+            Offhand::Weapon(map_weapon(wow_class::WEAPON, sub, hand))
+        }
         _ => Offhand::Empty,
     }
 }
@@ -159,6 +161,10 @@ pub struct Loadout {
 }
 
 impl Loadout {
+    pub fn unarmed() -> Self {
+        Self::new(ErWeapon::Fist, Hand::One, Offhand::Empty)
+    }
+
     pub fn new(right: ErWeapon, right_hand: Hand, offhand: Offhand) -> Self {
         Self {
             right,
@@ -199,6 +205,7 @@ mod tests {
         assert_eq!(map_weapon(2, s::AXE_2H, Hand::Two), ErWeapon::Greataxe);
         assert_eq!(map_weapon(2, s::MACE_2H, Hand::Two), ErWeapon::GreatHammer);
         assert_eq!(map_weapon(2, s::POLEARM, Hand::Two), ErWeapon::Halberd);
+        assert_eq!(map_weapon(2, s::STAFF, Hand::Two), ErWeapon::Twinblade);
         assert_eq!(map_weapon(2, s::FIST, Hand::One), ErWeapon::Fist);
     }
 

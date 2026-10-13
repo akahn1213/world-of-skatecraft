@@ -35,6 +35,7 @@ use crate::char_select::InWorldGated;
 use crate::ui_script::{PlayerUiHover, PointerOverUiPanel, UiKeyboardCapture};
 
 pub(crate) mod chord;
+mod controller;
 mod layout;
 mod script_input;
 mod store;
@@ -101,6 +102,7 @@ pub(crate) struct BindingsState {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Held {
     Key(KeyCode),
+    Dpad(u16),
     Mouse(MouseButton),
     Wheel,
 }
@@ -160,6 +162,8 @@ impl Plugin for BindingsPlugin {
             .init_resource::<BindingDispatch>()
             .init_resource::<BindingsState>()
             .init_resource::<BindingFiles>()
+            .init_resource::<controller::Dpad>()
+            .add_systems(PreUpdate, controller::poll)
             .add_systems(
                 Update,
                 (
@@ -320,6 +324,14 @@ impl WheelNotches {
     }
 }
 
+/// Input gates and the fork's controller state, grouped to fit Bevy's system parameter limit.
+#[derive(bevy::ecs::system::SystemParam)]
+struct BindingContext<'w> {
+    cover: Option<Res<'w, crate::loading_screen::LoadingScreen>>,
+    tarnished: Option<Res<'w, crate::tarnished::Drive>>,
+    dpad: Option<Res<'w, controller::Dpad>>,
+}
+
 /// The dispatch pass (see the module doc). Runs after the UI key feed and before
 /// `WorldStage::Input`, so a bound key acts this frame, once.
 fn latch_and_dispatch(
@@ -339,9 +351,19 @@ fn latch_and_dispatch(
     mut same_vm: Local<crate::ui_script::VmMemo<bool>>,
     mut notches: Local<WheelNotches>,
     mut focus_lost: MessageReader<bevy::input::keyboard::KeyboardFocusLost>,
-    cover: Option<Res<crate::loading_screen::LoadingScreen>>,
-    tarnished: Option<Res<crate::tarnished::Drive>>,
+    context: BindingContext,
 ) {
+    let BindingContext {
+        cover,
+        tarnished,
+        dpad,
+    } = context;
+    let covered = cover.is_some_and(|c| c.covering());
+    let dpad_held = if covered {
+        0
+    } else {
+        dpad.as_ref().map_or(0, |d| d.held)
+    };
     state.just.clear();
     state.fired.clear();
     state.amounts.clear();
@@ -360,7 +382,7 @@ fn latch_and_dispatch(
     // the direction bits only, so the mouse pair and autorun survive) and the world enter behind
     // the loading cover (`0x5144c0`), which clears every bit. A key's latch meets them in the
     // stuck-latch sweep too, whose up-half runs the Stop.
-    if cover.is_some_and(|c| c.covering()) {
+    if covered {
         state.held.clear();
     } else if focus_lost.read().count() > 0 {
         state
@@ -395,7 +417,7 @@ fn latch_and_dispatch(
     // reference's `0x424790` wipe, so a key held across an alt-tab re-latches on its next repeat.
     state
         .down
-        .retain(|&kc| physically_down(Held::Key(kc), &keys, &buttons));
+        .retain(|&kc| physically_down(Held::Key(kc), &keys, &buttons, dpad_held));
 
     // ── Keyboard ── press edges run their command, gated on ownership and the capture arm;
     // release edges unlatch and run the `runOnUp` up-half.
@@ -454,6 +476,29 @@ fn latch_and_dispatch(
             ButtonState::Released => {
                 state.down.retain(|&kc| kc != key);
                 release(&mut state, &mut script, Held::Key(key));
+            }
+        }
+    }
+
+    // Fork D-pad support uses the real number-key bindings, including modifiers and bar pages.
+    // Track each button separately from the keyboard; releases still run while typing.
+    for (button, key, number) in controller::NUMBERS {
+        let held = Held::Dpad(button);
+        if !typing
+            && !sup
+            && !covered
+            && !capture.consumed.contains(&key)
+            && dpad.as_ref().is_some_and(|d| d.pressed & button != 0)
+            && !state.latched.iter().any(|(k, _)| *k == held)
+        {
+            let chord = Chord {
+                alt,
+                ctrl,
+                shift,
+                key: BindKey::Key(chord::KeyName::Char(number)),
+            };
+            if let Some(command) = dispatch.resolve(chord, dev_plane) {
+                press(&mut state, &mut script, command, held);
             }
         }
     }
@@ -521,7 +566,7 @@ fn latch_and_dispatch(
     // here.
     let mut stuck: Vec<Held> = Vec::new();
     for (k, _) in &state.latched {
-        if !physically_down(*k, &keys, &buttons) && !stuck.contains(k) {
+        if !physically_down(*k, &keys, &buttons, dpad_held) && !stuck.contains(k) {
             stuck.push(*k);
         }
     }
@@ -544,12 +589,14 @@ fn physically_down(
     key: Held,
     keys: &ButtonInput<KeyCode>,
     buttons: &ButtonInput<MouseButton>,
+    dpad: u16,
 ) -> bool {
     match key {
         Held::Key(KeyCode::Enter) => {
             keys.pressed(KeyCode::Enter) || keys.pressed(KeyCode::NumpadEnter)
         }
         Held::Key(kc) => keys.pressed(kc),
+        Held::Dpad(button) => dpad & button != 0,
         Held::Mouse(b) => buttons.pressed(b),
         // A notch is a press and a release in one frame; it is never "held".
         Held::Wheel => false,

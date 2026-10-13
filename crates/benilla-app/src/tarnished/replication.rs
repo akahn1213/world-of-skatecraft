@@ -252,7 +252,7 @@ fn packet(
                 drive.pending = false;
                 drive.active = true;
                 let _ = net.0.send(ClientCommand::TarnishedMode(true));
-                info!("tarnished: server approved sword/shield stance");
+                info!("tarnished: server approved equipped stance");
             } else if !pose.active {
                 super::stop(&mut host, &mut drive, &mut link, &net);
             }

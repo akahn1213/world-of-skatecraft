@@ -67,9 +67,11 @@ struct Host {
     input: InputBuffer,
     transport: Mutex<benilla_controller::ControllerTransport>,
     controller: benilla_controller::CombatInput,
+    loadout: Option<benilla_tarnished::weapon::Loadout>,
+    ability_blocked: bool,
 }
 
-fn backend() -> Option<Box<dyn Backend>> {
+fn backend(loadout: benilla_tarnished::weapon::Loadout) -> Option<Box<dyn Backend>> {
     #[cfg(feature = "er-data")]
     {
         let path = std::env::var_os("ER_ANIMATIONS")
@@ -77,7 +79,7 @@ fn backend() -> Option<Box<dyn Backend>> {
             .unwrap_or_else(|| {
                 std::path::PathBuf::from(".setup/tarnished/assets/player_anims.bin")
             });
-        match benilla_tarnished::reference::ReferenceBackend::load(&path) {
+        match benilla_tarnished::reference::ReferenceBackend::load_equipped(&path, loadout) {
             Ok(backend) => Some(Box::new(backend)),
             Err(error) => {
                 warn!("tarnished: cannot load {}: {error}; run python3 setup/tarnished.py (both actions and animations are required)", path.display());
@@ -87,6 +89,7 @@ fn backend() -> Option<Box<dyn Backend>> {
     }
     #[cfg(not(feature = "er-data"))]
     {
+        let _ = loadout;
         None
     }
 }
@@ -121,7 +124,7 @@ impl Plugin for TarnishedPlugin {
 }
 
 fn prepare(mut host: ResMut<Host>, mut drive: ResMut<Drive>) {
-    host.backend = backend();
+    host.backend = backend(benilla_tarnished::weapon::Loadout::unarmed());
     if let Some(backend) = &host.backend {
         drive.bind = backend.bind_pose();
     }
@@ -160,16 +163,53 @@ fn reference_yaw(yaw: f32) -> f32 {
     yaw + std::f32::consts::PI
 }
 
-fn equipped(store: &ObjectStore, items: &crate::items::Items, net: &NetCommands) -> bool {
+pub(crate) fn has_stance(store: &ObjectStore) -> bool {
+    store
+        .0
+        .unit_auras()
+        .any(|aura| aura.spell_id == benilla_formats::skatecraft::SPELL_TARNISHED_STANCE)
+}
+
+fn equipped(
+    store: &ObjectStore,
+    items: &crate::items::Items,
+    net: &NetCommands,
+) -> Option<benilla_tarnished::weapon::Loadout> {
+    use benilla_tarnished::weapon::{map_offhand, map_weapon, Hand, Loadout, Offhand};
     let template = |slot| {
-        let entry = store.0.player_visible_item_entry(slot)?;
-        items.template(entry, store.0.player_inv_slot(slot).unwrap_or(0), net)
+        let entry = store.0.player_visible_item_entry(slot).unwrap_or(0);
+        if entry == 0 {
+            return Some(None);
+        }
+        items
+            .template(entry, store.0.player_inv_slot(slot).unwrap_or(0), net)
+            .map(Some)
     };
-    // The first vertical loop matches the server's approved warrior/sword/shield slice.
-    store.0.unit_class() == Some(1)
-        && template(15).is_some_and(|item| item.class == 2 && item.subclass == 7)
-        && template(16).is_some_and(|item| item.class == 4 && item.subclass == 6)
-        && !crate::items::is_disarmed(store)
+    let right = template(15)?;
+    let left = template(16)?;
+    if crate::items::is_disarmed(store) {
+        return Some(Loadout::unarmed());
+    }
+    let hand = if right.is_some_and(|item| item.inventory_type == 17) {
+        Hand::Two
+    } else {
+        Hand::One
+    };
+    Some(Loadout::new(
+        right.map_or(benilla_tarnished::ErWeapon::Fist, |item| {
+            map_weapon(item.class, item.subclass, hand)
+        }),
+        hand,
+        if hand == Hand::Two {
+            Offhand::Empty
+        } else {
+            map_offhand(
+                left.map(|item| item.class),
+                left.map(|item| item.subclass),
+                Hand::One,
+            )
+        },
+    ))
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -200,6 +240,10 @@ fn tick(
         crate::target::ReactionInputs,
         crate::target::CombatSelect,
         Res<crate::loading_screen::LoadingScreen>,
+        Res<crate::spell::PendingCast>,
+        Res<crate::spell::ActiveChannel>,
+        MessageReader<crate::creature_anim::CastEvent>,
+        Option<Res<crate::ui_action::Spells>>,
     ),
     mut state: (ResMut<Host>, ResMut<Drive>, ResMut<replication::Link>),
     net: Res<NetCommands>,
@@ -207,11 +251,40 @@ fn tick(
     let (keys, mouse, motion) = input_sources;
     let (host, drive, link) = (&mut *state.0, &mut *state.1, &mut *state.2);
     link.discover(time.elapsed_secs_f64(), &net);
-    let (self_guid, index, items, reactions, mut selection, loading) = context;
+    let (
+        self_guid,
+        index,
+        items,
+        reactions,
+        mut selection,
+        loading,
+        pending_cast,
+        channel,
+        mut casts,
+        spells,
+    ) = context;
+    let mut cast_released = false;
+    for event in casts.read() {
+        if event.kind == crate::creature_anim::CastEventKind::Go
+            && self_guid.0.and_then(|guid| index.0.get(&guid)).copied() == Some(event.entity)
+            && event.spell_id != benilla_formats::skatecraft::SPELL_TARNISHED_STANCE
+            && !spells
+                .as_ref()
+                .and_then(|spells| spells.catalog.get(event.spell_id))
+                .is_some_and(|spell| spell.on_next_swing())
+        {
+            cast_released = true;
+        }
+    }
     let self_object = self_guid
         .0
         .and_then(|guid| index.0.get(&guid))
         .and_then(|entity| objects.get(*entity).ok());
+    let loadout = self_object.and_then(|(_, _, store, _)| equipped(store, &items, &net));
+    let aura = self_object.is_some_and(|(_, _, store, _)| has_stance(store));
+    if !aura {
+        host.ability_blocked = false;
+    }
     let focused = window.single().is_ok_and(|w| w.focused);
     let allowed = player.may_tarnish()
         && !skate.active
@@ -223,30 +296,54 @@ fn tick(
             !s.0.unit_is_dead()
                 && s.0.unit_mount_display_id() == 0
                 && s.0.unit_flags() & (crate::player::UNIT_FLAG_STUNNED | 0x0010_0000) == 0
-                && equipped(s, &items, &net)
+                && loadout.is_some()
         });
     let raw = host.transport.lock().unwrap().poll();
     let pad = host.controller.sample(raw);
     let buttons = pad.buttons;
     let pressed = pad.pressed;
     let toggle = keys.just_pressed(KeyCode::F8) || pressed & 0x0010 != 0;
+    if toggle {
+        let spell_id = benilla_formats::skatecraft::SPELL_TARNISHED_STANCE;
+        let _ = net.0.send(if aura {
+            ClientCommand::CancelAura { spell_id }
+        } else {
+            ClientCommand::CastSpell {
+                spell_id,
+                target: None,
+            }
+        });
+    }
     if (drive.active || link.requested)
         && (!allowed
+            || !aura
             || !link.acknowledged
             || toggle
             || (link.requested && time.elapsed_secs_f64() - link.request_time > 2.0))
     {
+        host.ability_blocked = aura;
+        let _ = net.0.send(ClientCommand::CancelAura {
+            spell_id: benilla_formats::skatecraft::SPELL_TARNISHED_STANCE,
+        });
         stop(host, drive, link, &net);
-    } else if toggle {
-        if !benilla_tarnished::er_data_compiled() {
-            warn!("{}", benilla_tarnished::unavailable());
-        } else if !allowed || !link.acknowledged {
-            warn!("tarnished: requires a negotiated server and a living, unmounted warrior with sword/shield");
+    } else if aura && !drive.active && !link.requested && !host.ability_blocked && link.acknowledged
+    {
+        if !allowed || !benilla_tarnished::er_data_compiled() {
+            host.ability_blocked = true;
+            let _ = net.0.send(ClientCommand::CancelAura {
+                spell_id: benilla_formats::skatecraft::SPELL_TARNISHED_STANCE,
+            });
         } else {
-            host.backend = backend();
+            let loadout = loadout.unwrap();
+            host.backend = backend(loadout);
             if host.backend.is_none() {
+                host.ability_blocked = true;
+                let _ = net.0.send(ClientCommand::CancelAura {
+                    spell_id: benilla_formats::skatecraft::SPELL_TARNISHED_STANCE,
+                });
                 return;
             }
+            host.loadout = Some(loadout);
             drive.bind = host.backend.as_ref().unwrap().bind_pose();
             drive.position = player.pos;
             drive.yaw = player.face_yaw();
@@ -255,17 +352,32 @@ fn tick(
             host.grounded = player.move_flags() & crate::creature_anim::move_flags::FALLING == 0;
             link.begin(time.elapsed_secs_f64());
             drive.pending = true;
-            // The self pose echoed by the server grants the stance before either controller changes.
-            drive.active = host.backend.is_some();
+            drive.active = true;
             link.publish(drive, time.elapsed_secs_f64(), &net, true);
             drive.active = false;
-            info!("tarnished: requesting sword/shield stance");
+            info!("tarnished: requesting equipped stance");
         }
     }
     if !drive.active {
         host.incoming.clear();
         return;
     }
+    if host.loadout != loadout {
+        if let (Some(backend), Some(loadout)) = (host.backend.as_mut(), loadout) {
+            if let Err(error) = backend.equip(loadout) {
+                warn!("tarnished: cannot equip armament: {error}");
+                host.ability_blocked = true;
+                let _ = net.0.send(ClientCommand::CancelAura {
+                    spell_id: benilla_formats::skatecraft::SPELL_TARNISHED_STANCE,
+                });
+                stop(host, drive, link, &net);
+                return;
+            }
+            host.loadout = Some(loadout);
+        }
+    }
+    let now = std::time::Instant::now();
+    let casting = pending_cast.in_flight(now) || channel.current(now).is_some();
     let Some((self_id, _, self_store, _)) = self_object else {
         return;
     };
@@ -327,7 +439,7 @@ fn tick(
     let keyboard_axis = |positive, negative| {
         u8::from(combat_key(positive)) as f32 - u8::from(combat_key(negative)) as f32
     };
-    let input = BackendInput {
+    let mut input = BackendInput {
         move_x: if pad.movement == [0.0; 2] {
             keyboard_axis(KeyCode::KeyD, KeyCode::KeyA)
         } else {
@@ -358,6 +470,19 @@ fn tick(
         target: locked.map(|(_, t, _, _)| reference_position(t.translation)),
         dt: TICK as f32,
     };
+    if casting || cast_released {
+        input.light_attack = false;
+        input.heavy_attack = false;
+        input.guard = false;
+        input.dodge = false;
+        if let Some(backend) = &mut host.backend {
+            backend.suspend_attacks();
+        }
+        host.input = Default::default();
+    }
+    if input.light_attack || input.heavy_attack || input.guard {
+        selection.stop_ranged();
+    }
     let ticks = host.combat.clock.advance(time.delta_secs_f64());
     host.input.sample(input);
     let Host {
@@ -370,6 +495,8 @@ fn tick(
         input,
         transport: _,
         controller: _,
+        loadout: _,
+        ability_blocked: _,
     } = host;
     let Some(backend) = backend.as_mut() else {
         return;
@@ -515,7 +642,8 @@ fn tick(
                         && self_store.0.unit_flags() & 0x0004_0000 == 0,
                     dodge_chance: self_store.0.player_dodge_percentage().unwrap_or(0.0) / 100.0,
                     parry_chance: self_store.0.player_parry_percentage().unwrap_or(0.0) / 100.0,
-                    can_parry: equipped(self_store, &items, &net),
+                    can_parry: loadout
+                        .is_some_and(|gear| gear.right != benilla_tarnished::ErWeapon::Fist),
                     guard: backend.guard(stamina, dot),
                 },
                 rand::random::<f32>(),
@@ -559,8 +687,16 @@ fn tick(
             let targets = resolve_swing(
                 &swing,
                 WowWeapon {
-                    min_damage: self_store.0.unit_min_damage().unwrap_or(0.0),
-                    max_damage: self_store.0.unit_max_damage().unwrap_or(0.0),
+                    min_damage: if (20..=25).contains(&backend.state().attack_kind) {
+                        self_store.0.unit_min_offhand_damage().unwrap_or(0.0)
+                    } else {
+                        self_store.0.unit_min_damage().unwrap_or(0.0)
+                    },
+                    max_damage: if (20..=25).contains(&backend.state().attack_kind) {
+                        self_store.0.unit_max_offhand_damage().unwrap_or(0.0)
+                    } else {
+                        self_store.0.unit_max_damage().unwrap_or(0.0)
+                    },
                 },
                 backend.active_motion_value().unwrap_or(0.0),
                 &candidates,

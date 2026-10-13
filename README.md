@@ -31,12 +31,33 @@ fully offline against a local server.
 `er-data` host bridge directly drives the upstream simulation, animation selection,
 authored crossfades, guard arm layers and orbit camera pinned at
 `177a3b5ec14a9bde39b9ab458a3400b4038224e3`. Build the launcher with `--features er-data`
-and use the patched vmangos server. F8 (pad Start) opts a living, unmounted warrior with a
-one-handed sword and shield into the stance; skating and ordinary movement cannot own the pad
+and use the patched vmangos server. Every class learns **Tarnished Stance** in the spellbook
+on login. Put it on an action bar: casting it enters the stance, and casting again or cancelling
+its aura leaves. F8 and pad Start are shortcuts to the same ability. Enter alive, unmounted,
+out of animal form and off the skateboard; skating and ordinary movement cannot own the pad
 at the same time. Control changes only after the server approves the ordered stance request;
-visual pose updates cannot enable combat. RB attacks, RT charges a heavy attack, LB holds guard, and tapping B rolls
-while holding B sprints. Keyboard equivalents are U, I, O and Space. F9 (R3) locks the selected
-attackable target; removal, death, range or occlusion clears the lock.
+visual pose updates cannot enable combat. Equipped weapons select the moveset, including
+one-handed, two-handed, mixed dual wield, paired weapons and fists. RB attacks, RT charges a
+heavy attack, and LB guards with a shield/two-hander or attacks with the off hand (paired
+weapons use their paired chain). Tapping B rolls; holding B sprints. Keyboard equivalents are
+U, I, O and Space. F9 (R3) locks a selected eligible enemy or acquires one using TAB priority;
+removal, death, range or occlusion clears the lock.
+
+The D-pad activates the keyboard number bindings: **Left = 1, Up = 2, Right = 3, Down = 4**.
+Put abilities in those action-bar slots to use them from the controller. This works outside
+Tarnished stance too and follows your key bindings and current action-bar page. Each press
+activates once; chat input, loading screens and an unfocused window suppress activation.
+
+Normal WoW spells and ranged attacks remain available. Direct melee abilities such as
+Sinister Strike and Eviscerate are disabled in this stance. Heroic Strike, Cleave and other
+next-swing abilities remain queued until the next successful contact request, replacing that
+swing with the native spell and its costs, effects and threat. The ER motion value carries into
+its weapon damage; additional contacts from that same swing do not duplicate the spell.
+Casts and channels suspend melee input; R1/R2 do not cancel them. WoW casting and ranged
+animations own the upper body while ER drives the lower body. A new melee action can cut an
+instant spell's animation tail and stops ranged auto-repeat. Ranged weapons continue to fire
+through WoW abilities; R1/R2 use the melee slots or fists. Books/held items provide no off-hand
+weapon. Staves use the two-handed Twinblade moveset; fishing poles fall back to fists.
 
 The attacker owns swept contacts; the defender answers server-correlated hits in iframe,
 passive dodge/parry, held front guard, hit order. NPC and stock clients retain native defence.
@@ -54,7 +75,7 @@ means forward/up, with camera inversion applied once by the reference camera. RT
 75% and releases at 65%. Disconnects clear held input, and a neutral/disconnected stick leaves
 keyboard movement available. Other platforms retain keyboard/mouse controls.
 Stock incoming stamina is normalized onto
-the reference sword and the pinned dummy's damage/stamina ratio. This is a fork policy, not an
+the equipped reference armament and the pinned dummy's damage/stamina ratio. This is a fork policy, not an
 extracted WoW or ER rule. There has been no supervised live two-client combat verification.
 
 Generate both the action table and baked animations from your own ELDEN RING files with
@@ -111,7 +132,7 @@ Log in with the account you made during setup and create a character.
 | **J** | summon / dismiss your skateboard |
 | **K** | switch between the WoW camera and the Skate 3 camera |
 | controller | skate (Skate 3 controls) |
-| D-pad | skate abilities: ↑ Ollie Boost, → Rocket Boost, ← Speed Demon, ↓ Moon Jump |
+| D-pad | action-bar number bindings: ← 1, ↑ 2, → 3, ↓ 4 (LB + D-pad keeps Skate 3 session markers) |
 
 ### Skateboarding, the profession
 
@@ -326,23 +347,23 @@ python3 tools/make_account.py tarnished2 '<another-test-password>' --gm 0
 On Windows use `python`. Replace the placeholders locally; do not commit credentials.
 Log in manually and create different characters. Set `WOW_GM=off` before launching
 (`export WOW_GM=off` on Linux, `$env:WOW_GM = "off"` in PowerShell).
-Use an alive, unmounted, non-skating **warrior with a one-handed sword in the main
-hand and a shield in the off hand**. Obtain equipment normally or provision it separately,
+Use an alive, unmounted, non-skating character of any class with the desired equipment.
+Obtain equipment normally or provision it separately,
 then test on ordinary accounts. Both clients must use this fork's relay-compatible revision;
 an observer needs no ER files to display relayed poses, but a participant entering stance
 needs the feature-enabled build and its own generated data.
 
 | Action | Xbox-style pad | Keyboard / mouse |
 |---|---|---|
-| Enter / leave stance | Start | F8 |
+| Enter / leave stance | Start | Cast **Tarnished Stance** / F8 shortcut |
 | Move / look | Left / right stick | WASD / hold either mouse button and move |
 | Light attack | RB | U |
 | Heavy attack (hold to charge) | RT | I |
-| Hold guard | **LB only** | Hold O |
+| Guard / off-hand attack | LB | O (hold to guard) |
 | Roll / sprint | Tap / hold B | Tap / hold Space |
-| Lock / unlock selected attackable target | R3 | F9 |
+| Acquire / lock / unlock an enemy | R3 | F9 |
 
-Keep the game focused and chat closed. Wait for `tarnished: server approved sword/shield
+Keep the game focused and chat closed. Wait for `tarnished: server approved equipped
 stance` before testing; a request or visible pose alone does not grant combat ownership.
 The lock clears on target death, removal, range or occlusion. Do not substitute the
 upstream sandbox's bindings: jump, crouch, weapon cycling and grip changes are not exposed
@@ -392,10 +413,10 @@ not evidence for an ordinary account.
   rebuild with `er-data`. `tarnished: cannot load ...`: correct `ER_ANIMATIONS` or regenerate
   both outputs; the client refuses stance rather than substitute stock action animations.
 - Stance unavailable: verify the release binary was built with `er-data`, the patched
-  server was actually restarted, and the warrior/gear/mount/focus requirements hold.
+  server was actually restarted, the character has learned Tarnished Stance, and the mount/form/focus requirements hold.
   A stock server receives only safe discovery and never enables the extension.
 
-This is a narrow experimental sword/shield bridge, not the full ELDEN RING game or a
+This is an experimental equipment-driven combat bridge, not the full ELDEN RING game or a
 server-authoritative ER simulation. The attacker owns swept contacts and the defender
 answers correlated hits; WoW still owns terrain and health. Animation retargeting and
 remote interpolation are approximate. ER sound baking is not integrated. Several upstream

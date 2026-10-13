@@ -75,6 +75,15 @@ again to unlock. Enter the stance with weapons stowed and try the sheath toggle 
 After rebuilding the patched server, check both red hostile and yellow neutral creatures,
 with friendly and out-of-range targets as rejection controls.
 
+After updating this gameplay integration, rebuild **both** the client and patched server and
+relog to learn **Tarnished Stance**. Check activation from the spellbook/action bar and removal
+by recasting or cancelling the aura. Test a caster with a staff, a rogue with mixed/paired
+weapons, a two-hander, and an unarmed character; change equipment while in stance.
+Verify Sinister Strike/Eviscerate are refused, while Heroic Strike/Cleave consume their queue
+and power once at contact. Cast Judgement/Hammer of Justice and a timed spell/channel: the
+upper body uses WoW animation, melee waits during timed casting, and the next swing resumes
+ER animation. Check bow/gun/wand abilities normally, then switch to melee input.
+
 You need:
 
 | | Where it comes from |

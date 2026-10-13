@@ -207,8 +207,6 @@ struct Host {
     dismissing: bool,
     /// Rocket Boost's aura was on us last frame.
     rocket_on: bool,
-    /// The pad's buttons last frame, for presses.
-    buttons: u16,
 }
 
 fn autostart_after() -> Option<f32> {
@@ -675,12 +673,6 @@ fn update(
         }
     }
     let input = host.transport.lock().unwrap().poll();
-    let buttons = input.buttons();
-    let pressed = buttons & !host.buttons;
-    host.buttons = buttons;
-    if server_board && buttons & profession::PAD_LB == 0 {
-        profession.dpad(pressed);
-    }
     let pad = input.controller().is_some();
     if pad != host.pad_seen {
         host.pad_seen = pad;

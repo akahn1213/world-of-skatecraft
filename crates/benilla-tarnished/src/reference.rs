@@ -13,7 +13,7 @@ use crate::{
     Backend, BackendInput, BackendState,
 };
 
-/// Sword/shield only until the two-client loop is verified.
+/// The equipped WoW armaments select the reference movesets.
 pub struct ReferenceBackend {
     player: Player,
     level: Level,
@@ -56,6 +56,17 @@ impl ReferenceBackend {
         Ok(backend)
     }
 
+    pub fn load_equipped(
+        path: &std::path::Path,
+        loadout: crate::weapon::Loadout,
+    ) -> std::io::Result<Self> {
+        let mut backend = Self::sword_and_shield();
+        backend.equip(loadout).map_err(std::io::Error::other)?;
+        backend.animation = Some(crate::animation::Animation::load(path, &backend.player)?);
+        backend.pose = backend.animation.as_ref().unwrap().bind();
+        Ok(backend)
+    }
+
     pub fn position(&self) -> Vec3 {
         self.player.pos
     }
@@ -92,7 +103,9 @@ impl ReferenceBackend {
             return Some((
                 data::ActionId::Attack(
                     air.moveset,
-                    if air.heavy {
+                    if air.paired {
+                        data::AttackKind::PairedJumpLand
+                    } else if air.heavy {
                         data::AttackKind::JumpHeavyLand
                     } else {
                         data::AttackKind::JumpLightLand
@@ -117,6 +130,49 @@ fn button(held: bool, previous: bool) -> Button {
 }
 
 impl Backend for ReferenceBackend {
+    fn equip(&mut self, loadout: crate::weapon::Loadout) -> Result<(), String> {
+        use crate::weapon::Offhand;
+        // The pinned extractor's indices are the protocol's armament codes (weapon.rs).
+        let mut player = Player::new(self.player.pos);
+        player.yaw = self.player.yaw;
+        player.hp = self.player.hp;
+        player.stamina = self.player.stamina;
+        player.weapon = usize::from(loadout.right.code());
+        player.left = match loadout.offhand {
+            Offhand::Empty => data::FIST,
+            Offhand::Shield => data::SHIELD,
+            Offhand::Torch => data::TORCH,
+            Offhand::Weapon(weapon) => usize::from(weapon.code()),
+        };
+        player.grip = if loadout.two_handing {
+            data::Grip::TwoHandRight
+        } else {
+            data::Grip::OneHand
+        };
+        if let Some(animation) = &mut self.animation {
+            animation
+                .equip(&player)
+                .map_err(|error| error.to_string())?;
+        }
+        self.player = player;
+        self.action = None;
+        self.previous = BackendInput::default();
+        self.feedback_window = None;
+        self.epoch = self.epoch.wrapping_add(1);
+        Ok(())
+    }
+
+    fn suspend_attacks(&mut self) {
+        self.player.buffer = None;
+        self.player.air_attack = None;
+        self.player.guarding = false;
+        self.player.hit_stop = 0.0;
+        if matches!(self.player.state, State::Act(a) if matches!(a.id, data::ActionId::Attack(..)))
+        {
+            self.player.state = State::Ground;
+        }
+    }
+
     fn step(&mut self, input: BackendInput) {
         // One call is exactly one tick. The host accumulates real time; dt never changes ER windows.
         let camera_yaw = self.camera.step(&self.player, &input);
@@ -222,7 +278,7 @@ impl Backend for ReferenceBackend {
             position: self.player.pos.to_array(),
             yaw: self.player.yaw,
             stamina: self.player.stamina,
-            weapon_class: crate::ErWeapon::Longsword.code(),
+            weapon_class: self.player.moveset().weapon,
             contact_window: u64::from(self.epoch) << 32,
             ..Default::default()
         };
@@ -230,9 +286,7 @@ impl Backend for ReferenceBackend {
             state.action = match id {
                 data::ActionId::Attack(moveset, kind) => {
                     state.attack_kind = kind as u8;
-                    if usize::from(moveset.weapon) == data::SHIELD {
-                        state.weapon_class = crate::ErWeapon::Shield.code();
-                    }
+                    state.weapon_class = moveset.weapon;
                     if let Some(index) = id
                         .def()
                         .hits
@@ -276,7 +330,7 @@ impl Backend for ReferenceBackend {
 
     fn stock_stamina_damage(&self, damage_ratio: f32) -> f32 {
         // The pinned dummy's damage/stamina pairs share 4:1 (dummy.rs::DState::Strike).
-        data::WEAPONS[data::DEFAULT_WEAPON].attack * damage_ratio.max(0.0) / 4.0
+        self.player.moveset().info().attack * damage_ratio.max(0.0) / 4.0
     }
 
     fn pose(&self) -> &[crate::SolvedJoint] {
@@ -313,6 +367,93 @@ impl Backend for ReferenceBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equipped_movesets_cover_melee_classes_and_both_hands() {
+        use crate::weapon::{Hand, Loadout, Offhand};
+        use crate::ErWeapon as W;
+        for (weapon, hand) in [
+            (W::Dagger, Hand::One),
+            (W::Longsword, Hand::One),
+            (W::Greatsword, Hand::Two),
+            (W::BattleAxe, Hand::One),
+            (W::Greataxe, Hand::Two),
+            (W::Club, Hand::One),
+            (W::GreatHammer, Hand::Two),
+            (W::Halberd, Hand::Two),
+            (W::Twinblade, Hand::Two),
+            (W::Fist, Hand::One),
+        ] {
+            for heavy in [false, true] {
+                let mut backend = ReferenceBackend::sword_and_shield();
+                backend
+                    .equip(Loadout::new(weapon, hand, Offhand::Empty))
+                    .unwrap();
+                backend.step(BackendInput {
+                    light_attack: !heavy,
+                    heavy_attack: heavy,
+                    ..Default::default()
+                });
+                let mut contact = false;
+                for _ in 0..600 {
+                    backend.step(BackendInput::default());
+                    if backend.active_swing().is_some() {
+                        assert_eq!(backend.state().weapon_class, weapon.code());
+                        contact = true;
+                        break;
+                    }
+                }
+                assert!(contact, "{weapon:?}, heavy={heavy}");
+            }
+        }
+        for left in [W::Longsword, W::Dagger] {
+            let mut backend = ReferenceBackend::sword_and_shield();
+            backend
+                .equip(Loadout::new(W::Longsword, Hand::One, Offhand::Weapon(left)))
+                .unwrap();
+            backend.step(BackendInput {
+                guard: true,
+                ..Default::default()
+            });
+            let state = backend.state();
+            assert_eq!(state.weapon_class, left.code());
+            assert!(if left == W::Longsword {
+                state.attack_kind >= 26
+            } else {
+                (20..=25).contains(&state.attack_kind)
+            });
+            assert!(backend.guard(10.0, 1.0).is_none());
+        }
+    }
+
+    #[test]
+    fn equipment_changes_and_casts_cancel_old_swings_without_refilling_stamina() {
+        let mut backend = ReferenceBackend::sword_and_shield();
+        backend.player.stamina = 30.0;
+        backend.player.hp = 50.0;
+        backend.step(BackendInput {
+            heavy_attack: true,
+            ..Default::default()
+        });
+        let stamina = backend.stamina();
+        backend.equip(crate::weapon::Loadout::unarmed()).unwrap();
+        assert_eq!(backend.stamina(), stamina);
+        assert_eq!(backend.player.hp, 50.0);
+        assert!(backend.active_swing().is_none());
+        backend.step(BackendInput {
+            light_attack: true,
+            ..Default::default()
+        });
+        backend.suspend_attacks();
+        assert!(backend.action().is_none());
+        for _ in 0..120 {
+            backend.step(BackendInput::default());
+            assert!(
+                backend.active_swing().is_none(),
+                "a cast must discard queued melee input"
+            );
+        }
+    }
 
     #[test]
     fn host_support_drives_upstream_falling_without_integrating_height_twice() {

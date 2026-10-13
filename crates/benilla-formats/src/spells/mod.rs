@@ -526,6 +526,7 @@ pub fn load_spell_catalog(chain: &mut Chain) -> Result<SpellCatalog> {
                     u32_at(r, COL_EFFECT_MECHANIC_1 + i).unwrap_or(0)
                 }),
                 prevention_type: u32_at(r, COL_PREVENTION_TYPE).unwrap_or(0),
+                damage_class: u32_at(r, 164).unwrap_or(0),
                 spell_family: u32_at(r, COL_SPELL_FAMILY_NAME).unwrap_or(0),
                 // Low dword first: the reference reads bit i at `[rec + 4 * (i >> 5) + 0x284]`.
                 spell_family_flags: u64::from(u32_at(r, COL_SPELL_FAMILY_FLAGS_LOW).unwrap_or(0))

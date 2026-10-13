@@ -350,6 +350,9 @@ pub(crate) fn spell_usable(
     items: &Items,
     commands: &NetCommands,
 ) -> (bool, bool) {
+    if crate::tarnished::has_stance(ctx.store) && d.tarnished_melee_ability() {
+        return (false, false);
+    }
     // Early-out (`0x6e3d99`): a tradeskill "spell" is always usable.
     if d.effects[0] == SPELL_EFFECT_TRADE_SKILL {
         return (true, false);

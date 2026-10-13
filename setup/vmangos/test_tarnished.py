@@ -47,6 +47,85 @@ class TarnishedServerTests(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.scratch)
 
+    def test_actual_cpp_equipment_spell_policy_and_queued_replacement(self):
+        cpp = added_file("src/game/Tarnished.cpp")
+        code = r"""
+#include <cassert>
+#include <cstdint>
+using uint8 = uint8_t; using uint32 = uint32_t;
+constexpr int ITEM_CLASS_ARMOR=4, ITEM_CLASS_WEAPON=2, ITEM_SUBCLASS_ARMOR_SHIELD=6;
+constexpr int INVTYPE_2HWEAPON=17, BASE_ATTACK=0, INVENTORY_SLOT_BAG_0=0, EQUIPMENT_SLOT_OFFHAND=16;
+constexpr int CURRENT_MELEE_SPELL=0, SPELL_DAMAGE_CLASS_MELEE=2;
+struct ItemProto { int Class=2, SubClass=7, InventoryType=13; };
+struct Item {
+    ItemProto proto; bool broken=false;
+    bool IsBroken() const { return broken; }
+    ItemProto const* GetProto() const { return &proto; }
+};
+struct Unit {};
+struct SpellEntry {
+    int DmgClass=0; bool queued=false;
+    bool IsNextMeleeSwingSpell() const { return queued; }
+};
+struct Spell {
+    bool m_tarnishedWeaponOverride=false, success=true;
+    uint32 m_tarnishedWeaponDamage=0; int casts=0;
+    struct Targets { Unit* target=nullptr; void setUnitTarget(Unit* unit) { target=unit; } } m_targets;
+    void cast() { ++casts; }
+    bool isSuccessCast() const { return success; }
+};
+struct Player {
+    Item* main=nullptr; Item* off=nullptr; Spell* queued=nullptr;
+    Item* GetWeaponForAttack(int, bool, bool) const { return main; }
+    Item* GetItemByPos(int, int) const { return off; }
+    Spell* GetCurrentSpell(int) const { return queued; }
+};
+"""
+        for marker in ["static uint8 Weapon(", "static bool Armament(", "bool MeleeAbility(", "static bool ReplaceSwing("]:
+            code += definition(cpp, marker) + "\n"
+        code += r"""
+int main() {
+    Player p; Unit target; Item right, left;
+    assert(Armament(&p, 20, 0));
+    p.main=&right;
+    int subclasses[]={0,1,4,5,6,7,8,10,13,15,2,3,18,19,20};
+    int codes[]={7,16,6,14,9,1,3,13,20,0,20,20,20,20,20};
+    for (int i=0;i<15;++i) {
+        right.proto.SubClass=subclasses[i];
+        assert(Armament(&p, codes[i], 0));
+        assert(!Armament(&p, 24, 0));
+    }
+    right.proto.SubClass=7; p.off=&left;
+    assert(Armament(&p, 1, 26)); // paired swords
+    left.proto.SubClass=15;
+    assert(Armament(&p, 0, 20)); // offhand dagger
+    assert(!Armament(&p, 1, 26)); // mixed hands cannot use paired swords
+    right.proto.InventoryType=17;
+    assert(!Armament(&p, 0, 20)); // two-hander puts the off hand away
+    right.broken=true; assert(Armament(&p, 20, 0));
+    for (int cls=0;cls<4;++cls) {
+        SpellEntry s; s.DmgClass=cls;
+        assert(MeleeAbility(&s)==(cls==2));
+        s.queued=true; assert(!MeleeAbility(&s));
+    }
+    assert(!ReplaceSwing(&p, &target, 200, 0));
+    Spell spell; p.queued=&spell;
+    assert(ReplaceSwing(&p, &target, 260, 0));
+    assert(spell.casts==1 && spell.m_targets.target==&target);
+    assert(spell.m_tarnishedWeaponOverride && spell.m_tarnishedWeaponDamage==260);
+    assert(ReplaceSwing(&p, &target, 520, 1));
+    assert(spell.m_tarnishedWeaponDamage==260); // native spell rolls crit once
+    spell.success=false;
+    assert(!ReplaceSwing(&p, &target, 100, 0));
+    assert(!spell.m_tarnishedWeaponOverride); // failed queued cast permits normal swing
+}
+"""
+        source = self.scratch / "gameplay.cpp"
+        binary = self.scratch / "gameplay"
+        source.write_text(code)
+        subprocess.run(["g++", "-std=c++14", "-Wall", "-Wextra", "-Werror", str(source), "-o", str(binary)], check=True)
+        subprocess.run([str(binary)], check=True)
+
     def test_actual_cpp_allowed_accepts_neutral_creatures_but_preserves_restrictions(self):
         cpp = added_file("src/game/Tarnished.cpp")
         code = r"""
@@ -576,7 +655,7 @@ int main() {
             self.skipTest("set TARNISHED_VMANGOS_BUILD to a configured, patched pinned-source build")
         directory = ROOT / Path(build).resolve().relative_to(ROOT)
         entries = json.loads((directory / "compile_commands.json").read_text())
-        names = {"Tarnished.cpp", "Unit.cpp", "Spell.cpp", "SpellCaster.cpp", "WorldSession.cpp",
+        names = {"Tarnished.cpp", "Skatecraft.cpp", "SpellEffects.cpp", "Unit.cpp", "Spell.cpp", "SpellCaster.cpp", "WorldSession.cpp",
                  "Opcodes.cpp", "Player.cpp", "CharacterHandler.cpp", "ChatHandler.cpp", "Object.cpp"}
         checked = set()
         for entry in entries:

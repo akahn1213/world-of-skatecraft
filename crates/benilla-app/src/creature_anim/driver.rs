@@ -632,7 +632,11 @@ pub(super) fn drive_animations(
         }
         let stance_draw = SheathRequest {
             entity,
-            state: 1,
+            state: if auto_repeat || cast_hold.is_some_and(|hold| hold.ranged) {
+                2
+            } else {
+                1
+            },
             ceremony: false,
         };
         if let Some(req) = if tarnished {

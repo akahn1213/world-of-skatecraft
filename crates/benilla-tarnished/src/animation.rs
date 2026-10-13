@@ -89,43 +89,122 @@ impl Animation {
                 "ER animation skeleton is incomplete",
             ));
         }
-        let mut sources = vec![
-            clip_name(WEAPONS[player.weapon].stance[0], IDLE),
-            clip_name(WEAPONS[player.left].stance[0], GUARD),
-            AIR_LOOP.to_owned(),
-            FALL_START.to_owned(),
-        ];
-        for direction in 0..4 {
-            sources.push(clip_name(0, WALK + direction));
-            sources.push(clip_name(0, RUN + direction));
+        validate_clips(&clips, player)?;
+        let mut rig = Animator {
+            ran: f32::MAX,
+            still: true,
+            ..Default::default()
+        };
+        let pose = sample_pose(player, &mut rig, &clips, 0.0, 0.0, 0.0);
+        if pose.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "ER equipped stance clip is missing",
+            ));
         }
-        sources.push(clip_name(0, SPRINT));
-        for direction in [Dir::Front, Dir::Back, Dir::Left, Dir::Right] {
-            for id in [
-                ActionId::Roll(player.load, direction),
-                ActionId::Hurt(HurtLevel::Small, direction),
-            ] {
-                sources.push(id.def().source.to_owned());
-            }
+        let bind = solve(&clips, &pose);
+        Ok(Self {
+            clips,
+            rig,
+            elapsed: 0.0,
+            bind,
+        })
+    }
+
+    pub(crate) fn equip(&mut self, player: &Player) -> std::io::Result<()> {
+        validate_clips(&self.clips, player)?;
+        self.rig = Animator {
+            ran: f32::MAX,
+            still: true,
+            ..Default::default()
+        };
+        Ok(())
+    }
+
+    pub(crate) fn bind(&self) -> Vec<SolvedJoint> {
+        self.bind.clone()
+    }
+
+    pub(crate) fn step(&mut self, player: &Player) -> Vec<SolvedJoint> {
+        let dt = 1.0 / 60.0;
+        self.elapsed += dt;
+        let pose = sample_pose(player, &mut self.rig, &self.clips, self.elapsed, dt, 0.0);
+        if pose.is_empty() {
+            return Vec::new();
         }
+        solve(&self.clips, &pose)
+    }
+}
+
+fn validate_clips(clips: &Clips, player: &Player) -> std::io::Result<()> {
+    let mut sources = vec![
+        clip_name(
+            WEAPONS[player.weapon].stance[usize::from(player.grip != Grip::OneHand)],
+            IDLE,
+        ),
+        clip_name(
+            if player.grip == Grip::OneHand {
+                WEAPONS[player.left].stance[0]
+            } else {
+                WEAPONS[player.weapon].stance[1]
+            },
+            GUARD,
+        ),
+        AIR_LOOP.to_owned(),
+        FALL_START.to_owned(),
+    ];
+    for direction in 0..4 {
+        sources.push(clip_name(0, WALK + direction));
+        sources.push(clip_name(0, RUN + direction));
+    }
+    sources.push(clip_name(0, SPRINT));
+    for direction in [Dir::Front, Dir::Back, Dir::Left, Dir::Right] {
         for id in [
-            ActionId::Backstep,
-            ActionId::SprintStop,
-            ActionId::GuardHit,
-            ActionId::GuardBreak,
-            ActionId::LandLight,
-            ActionId::LandRun,
-            ActionId::LandSprint,
-            ActionId::LandHeavy,
-            ActionId::LandFall,
+            ActionId::Roll(player.load, direction),
+            ActionId::Hurt(HurtLevel::Small, direction),
         ] {
             sources.push(id.def().source.to_owned());
         }
-        let moveset = Moveset {
-            weapon: player.weapon as u8,
+    }
+    for id in [
+        ActionId::Backstep,
+        ActionId::SprintStop,
+        ActionId::GuardHit,
+        ActionId::GuardBreak,
+        ActionId::LandLight,
+        ActionId::LandRun,
+        ActionId::LandSprint,
+        ActionId::LandHeavy,
+        ActionId::LandFall,
+    ] {
+        sources.push(id.def().source.to_owned());
+    }
+    for moveset in [
+        player.moveset(),
+        Moveset {
+            weapon: player.left as u8,
             two_hand: false,
-        };
+        },
+    ] {
         for kind in [
+            AttackKind::LeftLight1,
+            AttackKind::LeftLight2,
+            AttackKind::LeftLight3,
+            AttackKind::LeftLight4,
+            AttackKind::LeftLight5,
+            AttackKind::LeftLight6,
+            AttackKind::PairedLight1,
+            AttackKind::PairedLight2,
+            AttackKind::PairedLight3,
+            AttackKind::PairedLight4,
+            AttackKind::PairedLight5,
+            AttackKind::PairedLight6,
+            AttackKind::PairedRun,
+            AttackKind::PairedRoll,
+            AttackKind::PairedBackstep,
+            AttackKind::PairedJumpLand,
+            AttackKind::PairedJumpLandShort,
+            AttackKind::CrouchAttack,
             AttackKind::Light1,
             AttackKind::Light2,
             AttackKind::Light3,
@@ -155,44 +234,16 @@ impl Animation {
                 sources.push(def.source.to_owned());
             }
         }
-        if let Some(missing) = sources.iter().find(|name| clips.get(name).is_none()) {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
-                format!("ER animation clip {missing} is missing; bake against the same pinned action table")));
-        }
-        let mut rig = Animator {
-            ran: f32::MAX,
-            still: true,
-            ..Default::default()
-        };
-        let pose = sample_pose(player, &mut rig, &clips, 0.0, 0.0, 0.0);
-        if pose.is_empty() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "ER sword stance clip is missing",
-            ));
-        }
-        let bind = solve(&clips, &pose);
-        Ok(Self {
-            clips,
-            rig,
-            elapsed: 0.0,
-            bind,
-        })
     }
-
-    pub(crate) fn bind(&self) -> Vec<SolvedJoint> {
-        self.bind.clone()
+    if let Some(missing) = sources.iter().find(|name| clips.get(name).is_none()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "ER animation clip {missing} is missing; bake against the same pinned action table"
+            ),
+        ));
     }
-
-    pub(crate) fn step(&mut self, player: &Player) -> Vec<SolvedJoint> {
-        let dt = 1.0 / 60.0;
-        self.elapsed += dt;
-        let pose = sample_pose(player, &mut self.rig, &self.clips, self.elapsed, dt, 0.0);
-        if pose.is_empty() {
-            return Vec::new();
-        }
-        solve(&self.clips, &pose)
-    }
+    Ok(())
 }
 
 fn solve(clips: &Clips, pose: &[f32]) -> Vec<SolvedJoint> {

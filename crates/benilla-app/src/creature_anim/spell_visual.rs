@@ -664,7 +664,12 @@ pub(super) fn route_cast_visuals(
                     } else {
                         commands.entity(ev.entity).try_remove::<super::RangedHold>();
                     }
-                    if let Some(anim_id) = kit.anim_id {
+                    if let Some(anim_id) = kit.anim_id.filter(|_| {
+                        !spells
+                            .catalog
+                            .get(ev.spell_id)
+                            .is_some_and(|spell| spell.on_next_swing())
+                    }) {
                         commands.entity(ev.entity).try_insert(CastHold {
                             anim_id,
                             spell_id: ev.spell_id,
@@ -738,6 +743,11 @@ pub(super) fn route_cast_visuals(
                         commands.entity(ev.entity).try_insert(super::RangedHold);
                     } else {
                         commands.entity(ev.entity).try_remove::<super::RangedHold>();
+                    }
+                    if let Some(anim_id) = kit.anim_id {
+                        commands
+                            .entity(ev.entity)
+                            .try_insert(super::SpellUpperBody(anim_id));
                     }
                     play_kit(
                         ev.entity,

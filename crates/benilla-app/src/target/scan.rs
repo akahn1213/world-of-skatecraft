@@ -409,6 +409,16 @@ pub(crate) struct CombatSelect<'w, 's> {
 }
 
 impl CombatSelect<'_, '_> {
+    pub(crate) fn stop_ranged(&mut self) {
+        let entity = self.seam.me.single().ok();
+        crate::creature_anim::cancel_auto_repeat_local(
+            entity,
+            &mut self.seam.auto_repeat,
+            &mut self.seam.ecs,
+            &self.seam.net,
+        );
+    }
+
     pub(crate) fn acquire(&mut self, mut eligible: impl FnMut(u64) -> bool) -> Option<u64> {
         if let Some(guid) = self.selection.guid.filter(|guid| eligible(*guid)) {
             return Some(guid);

@@ -49,6 +49,8 @@ pub struct SpellDisplay {
     /// `PreventionType` (column 165): 1 silence, 2 pacify, 0 neither; the crowd control that
     /// refuses the spell locally (`0x6094f0`, from `TryCast` `0x6e4b60`). A stun refuses all.
     pub prevention_type: u32,
+    /// `DmgClass` (column 164): 2 is a melee ability, 3 is ranged.
+    pub damage_class: u32,
     /// `modalNextSpell` (column 38): cast by the client itself (`0x6e74aa`), at no target, when
     /// `SMSG_CAST_RESULT` for this in-flight spell arrives, success or failure (`0x6e7330`); if
     /// it is the running auto-repeat, that is only re-armed (`0x6e745d`). Every hunter shot
@@ -227,6 +229,7 @@ impl Default for SpellDisplay {
             spell_family: 0,
             spell_family_flags: 0,
             prevention_type: 0,
+            damage_class: 0,
             passive: false,
             cast_ui: 0,
             effects: [0, 0, 0],
@@ -510,6 +513,12 @@ impl SpellDisplay {
     /// `Attributes & 0x404`: queued on the server's melee slot for the next swing, not cast.
     pub fn on_next_swing(&self) -> bool {
         self.attributes & ATTR_ON_NEXT_SWING != 0
+    }
+
+    /// Fork policy: direct melee abilities are replaced by Tarnished attacks. Queued swing
+    /// modifiers (Heroic Strike/Cleave) and magic/ranged spells retain their native behavior.
+    pub fn tarnished_melee_ability(&self) -> bool {
+        self.damage_class == 2 && !self.on_next_swing()
     }
 
     /// The tooltip's "Attack speed" arm: `Attributes & 0x2` alone (`0x52ec1c`), so Throw too.

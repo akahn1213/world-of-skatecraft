@@ -1,7 +1,8 @@
 diff --git a/src/game/CMakeLists.txt b/src/game/CMakeLists.txt
+index 4b8c728..782d53c 100644
 --- a/src/game/CMakeLists.txt
 +++ b/src/game/CMakeLists.txt
-@@ -20,6 +20,7 @@
+@@ -20,6 +20,7 @@ set (game_SRCS
      AuraRemovalMgr.cpp
      AutoBroadCastMgr.cpp
      Skatecraft.cpp
@@ -9,7 +10,7 @@ diff --git a/src/game/CMakeLists.txt b/src/game/CMakeLists.txt
      Camera.cpp
      Conditions.cpp
      CreatureGroups.cpp
-@@ -254,6 +255,7 @@
+@@ -254,6 +255,7 @@ set (game_SRCS
      AuraRemovalMgr.h
      AutoBroadCastMgr.h
      Skatecraft.h
@@ -18,9 +19,10 @@ diff --git a/src/game/CMakeLists.txt b/src/game/CMakeLists.txt
      ClientDefines.h
      Conditions.h
 diff --git a/src/game/Handlers/CharacterHandler.cpp b/src/game/Handlers/CharacterHandler.cpp
+index 8248a36..153e9c0 100644
 --- a/src/game/Handlers/CharacterHandler.cpp
 +++ b/src/game/Handlers/CharacterHandler.cpp
-@@ -447,6 +447,7 @@
+@@ -447,6 +447,7 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder *holder)
          alreadyOnline = true;
          pCurrChar->GetSession()->SetPlayer(nullptr);
          Skatecraft::ResetVisualSession(pCurrChar);
@@ -29,9 +31,10 @@ diff --git a/src/game/Handlers/CharacterHandler.cpp b/src/game/Handlers/Characte
  
          // Need to attach packet bcaster to the new socket
 diff --git a/src/game/Handlers/ChatHandler.cpp b/src/game/Handlers/ChatHandler.cpp
+index 51b22a1..1d07582 100644
 --- a/src/game/Handlers/ChatHandler.cpp
 +++ b/src/game/Handlers/ChatHandler.cpp
-@@ -168,6 +168,8 @@
+@@ -168,6 +168,8 @@ void WorldSession::HandleChatMessageOpcode(WorldPackets::Chat::ChatMessage const
      }
      if (packet.lang == LANG_ADDON && _player && Skatecraft::HandleAddonMessage(_player, packet.message))
          return;
@@ -41,9 +44,10 @@ diff --git a/src/game/Handlers/ChatHandler.cpp b/src/game/Handlers/ChatHandler.c
      if (!IsLanguageAllowedForChatType(packet.lang, packet.type))
      {
 diff --git a/src/game/Objects/Object.cpp b/src/game/Objects/Object.cpp
+index 7c520e3..003ec29 100644
 --- a/src/game/Objects/Object.cpp
 +++ b/src/game/Objects/Object.cpp
-@@ -375,7 +375,10 @@
+@@ -375,7 +375,10 @@ void Object::BuildCreateUpdateBlockForPlayer(UpdateData& data, Player* target) c
      BuildValuesUpdate(updatetype, &buf, &updateMask, target);
      // Retained extension poses follow the entire create batch on the same socket.
      if (Player const* sender = ToPlayer())
@@ -55,9 +59,10 @@ diff --git a/src/game/Objects/Object.cpp b/src/game/Objects/Object.cpp
  
  void Object::SendCreateUpdateToPlayer(Player* player)
 diff --git a/src/game/Objects/Player.cpp b/src/game/Objects/Player.cpp
+index aad5f22..ec444bc 100644
 --- a/src/game/Objects/Player.cpp
 +++ b/src/game/Objects/Player.cpp
-@@ -1115,6 +1115,7 @@
+@@ -1115,6 +1115,7 @@ void Player::Update(uint32 update_diff, uint32 p_time)
          return;
  
      Skatecraft::ExpireVisual(this);
@@ -65,7 +70,7 @@ diff --git a/src/game/Objects/Player.cpp b/src/game/Objects/Player.cpp
      UpdateMirrorTimers(update_diff);
  
      //used to implement delayed far teleports
-@@ -2195,6 +2196,7 @@
+@@ -2195,6 +2196,7 @@ void Player::AddToWorld()
      // The player should only be added when logging in
      Unit::AddToWorld();
      skateVisual.mapEntry = WorldTimer::getMSTime();
@@ -73,7 +78,7 @@ diff --git a/src/game/Objects/Player.cpp b/src/game/Objects/Player.cpp
  
      for (int i = PLAYER_SLOT_START; i < PLAYER_SLOT_END; ++i)
      {
-@@ -2207,6 +2209,7 @@
+@@ -2207,6 +2209,7 @@ void Player::AddToWorld()
  void Player::RemoveFromWorld()
  {
      Skatecraft::ClearVisual(this);
@@ -82,9 +87,10 @@ diff --git a/src/game/Objects/Player.cpp b/src/game/Objects/Player.cpp
          SendDestroyGroupMembers(true);
  
 diff --git a/src/game/Objects/Player.h b/src/game/Objects/Player.h
+index 84cbc9f..5341e96 100644
 --- a/src/game/Objects/Player.h
 +++ b/src/game/Objects/Player.h
-@@ -1672,6 +1672,7 @@
+@@ -1672,6 +1672,7 @@ class Player final: public Unit
      public:
          void AddToWorld() override;
          Skatecraft::VisualState skateVisual;
@@ -93,9 +99,10 @@ diff --git a/src/game/Objects/Player.h b/src/game/Objects/Player.h
  
          /* Switch from instanceId of same map.
 diff --git a/src/game/Objects/SpellCaster.cpp b/src/game/Objects/SpellCaster.cpp
+index 9ce3685..3237630 100644
 --- a/src/game/Objects/SpellCaster.cpp
 +++ b/src/game/Objects/SpellCaster.cpp
-@@ -222,15 +222,26 @@
+@@ -222,15 +222,26 @@ SpellMissInfo SpellCaster::SpellHitResult(Unit* pVictim, SpellEntry const* pSpel
                              pSpellEntry->HasAttribute(SPELL_ATTR_EX3_NORMAL_RANGED_ATTACK) ?
                              SPELL_DAMAGE_CLASS_RANGED : pSpellEntry->DmgClass;
  
@@ -125,9 +132,10 @@ diff --git a/src/game/Objects/SpellCaster.cpp b/src/game/Objects/SpellCaster.cpp
      return SPELL_MISS_NONE;
  }
 diff --git a/src/game/Objects/Unit.cpp b/src/game/Objects/Unit.cpp
+index 6b9a89a..d48cc0f 100644
 --- a/src/game/Objects/Unit.cpp
 +++ b/src/game/Objects/Unit.cpp
-@@ -1306,7 +1306,7 @@
+@@ -1306,7 +1306,7 @@ void Unit::PetOwnerKilledUnit(Unit* pVictim)
      CallForAllControlledUnits(PetOwnerKilledUnitHelper(pVictim), CONTROLLED_MINIPET | CONTROLLED_GUARDIANS);
  }
  
@@ -136,7 +144,7 @@ diff --git a/src/game/Objects/Unit.cpp b/src/game/Objects/Unit.cpp
  {
      damageInfo->attacker = this;
      damageInfo->target = pVictim;
-@@ -1388,7 +1388,44 @@
+@@ -1388,7 +1388,44 @@ void Unit::CalculateMeleeDamage(Unit* pVictim, uint32 damage, CalcDamageInfo* da
      }
  
      // Sets damageInfo->hitOutCome
@@ -182,7 +190,7 @@ diff --git a/src/game/Objects/Unit.cpp b/src/game/Objects/Unit.cpp
  
      switch (damageInfo->hitOutCome)
      {
-@@ -1464,7 +1501,7 @@
+@@ -1464,7 +1501,7 @@ void Unit::CalculateMeleeDamage(Unit* pVictim, uint32 damage, CalcDamageInfo* da
          {
              damageInfo->TargetState = VICTIMSTATE_NORMAL;
              damageInfo->procEx |= PROC_EX_BLOCK;
@@ -191,7 +199,7 @@ diff --git a/src/game/Objects/Unit.cpp b/src/game/Objects/Unit.cpp
              if (damageInfo->blocked_amount >= damageInfo->subDamage[0].damage)
              {
                  damageInfo->TargetState = VICTIMSTATE_BLOCKS;
-@@ -1917,7 +1954,7 @@
+@@ -1917,7 +1954,7 @@ static ResistanceValues resistValues[] =
      {25, 55, 16, 3, 1, 75} // 300
  };
  
@@ -200,7 +208,7 @@ diff --git a/src/game/Objects/Unit.cpp b/src/game/Objects/Unit.cpp
  {
      if (!pCaster || !IsAlive() || !damage)
          return;
-@@ -1934,25 +1971,9 @@
+@@ -1934,25 +1971,9 @@ void Unit::CalculateDamageAbsorbAndResist(SpellCaster* pCaster, SpellSchoolMask
  
      int32 remainingDamage = int32(damage);
  
@@ -229,7 +237,7 @@ diff --git a/src/game/Objects/Unit.cpp b/src/game/Objects/Unit.cpp
  
      auto HandleSchoolAbsorb = [&]()
      {
-@@ -2202,16 +2223,17 @@
+@@ -2202,16 +2223,17 @@ void Unit::CalculateDamageAbsorbAndResist(SpellCaster* pCaster, SpellSchoolMask
      *absorb = damage - remainingDamage - *resist;
  }
  
@@ -249,7 +257,7 @@ diff --git a/src/game/Objects/Unit.cpp b/src/game/Objects/Unit.cpp
              break;
          default:
              break;
-@@ -2225,15 +2247,85 @@
+@@ -2225,15 +2247,85 @@ void Unit::CalculateAbsorbResistBlock(SpellCaster* pCaster, SpellNonMeleeDamage*
          damageInfo->damage -= damageInfo->blocked;
      }
  
@@ -331,12 +339,12 @@ diff --git a/src/game/Objects/Unit.cpp b/src/game/Objects/Unit.cpp
 +
  void Unit::AttackerStateUpdate(Unit* pVictim, WeaponAttackType attType, bool extra)
  {
-+    if (Tarnished::Active(this))
-+        return; // the negotiated client, not autoattack, owns the swing
++    if (Tarnished::Active(this) && attType != RANGED_ATTACK && !extra)
++        return; // the negotiated client owns melee swings; native ranged/procs still run
      if (!pVictim->IsAlive())
          return;
  
-@@ -2258,7 +2350,61 @@
+@@ -2258,7 +2350,61 @@ void Unit::AttackerStateUpdate(Unit* pVictim, WeaponAttackType attType, bool ext
      }
  
      CalcDamageInfo damageInfo;
@@ -399,7 +407,7 @@ diff --git a/src/game/Objects/Unit.cpp b/src/game/Objects/Unit.cpp
  
      ProcDamageAndSpell(ProcSystemArguments(damageInfo.target, damageInfo.procAttacker, damageInfo.procVictim, damageInfo.procEx, damageInfo.totalDamage, damageInfo.totalDamage + damageInfo.totalAbsorb + damageInfo.totalResist, damageInfo.attackType));
  
-@@ -8276,6 +8422,7 @@
+@@ -8276,6 +8422,7 @@ void Unit::AddToWorld()
  void Unit::RemoveFromWorld()
  {
      // cleanup
@@ -408,6 +416,7 @@ diff --git a/src/game/Objects/Unit.cpp b/src/game/Objects/Unit.cpp
      {
          Uncharm();
 diff --git a/src/game/Objects/Unit.h b/src/game/Objects/Unit.h
+index 895b393..080d234 100644
 --- a/src/game/Objects/Unit.h
 +++ b/src/game/Objects/Unit.h
 @@ -26,6 +26,7 @@
@@ -418,7 +427,7 @@ diff --git a/src/game/Objects/Unit.h b/src/game/Objects/Unit.h
  #include "UnitDefines.h"
  #include "SpellAuraDefines.h"
  #include "UpdateFields.h"
-@@ -820,8 +821,9 @@
+@@ -820,8 +821,9 @@ class Unit : public SpellCaster
          float SpellDamageBonusTaken(SpellCaster const* pCaster, SpellEntry const* spellProto, SpellEffectIndex effectIndex, float pdamage, DamageEffectType damagetype, uint32 stack = 1, Spell* spell = nullptr) const;
          int32 SpellBaseHealingBonusTaken(SpellSchoolMask schoolMask) const;
          float SpellHealingBonusTaken(SpellCaster const* pCaster, SpellEntry const* spellProto, SpellEffectIndex effectIndex, float healamount, DamageEffectType damagetype, uint32 stack = 1, Spell* spell = nullptr) const;
@@ -430,7 +439,7 @@ diff --git a/src/game/Objects/Unit.h b/src/game/Objects/Unit.h
          float RollMagicResistanceMultiplierOutcomeAgainst(float resistanceChance, SpellSchoolMask schoolMask, DamageEffectType dmgType, SpellEntry const* spellProto) const;
          bool IsSpellPartiallyBlocked(SpellCaster const* pCaster, SpellEntry const* spellProto, WeaponAttackType attackType = BASE_ATTACK) const;
          bool RollSpellBlockChanceOutcome(SpellCaster const* pCaster, WeaponAttackType attackType) const;
-@@ -990,7 +992,11 @@
+@@ -990,7 +992,11 @@ class Unit : public SpellCaster
          void UpdateReactives(uint32 p_time);
  
          virtual float GetWeaponBasedAuraModifier(WeaponAttackType attType, AuraType auraType) const = 0;
@@ -444,9 +453,10 @@ diff --git a/src/game/Objects/Unit.h b/src/game/Objects/Unit.h
          void DealMeleeDamage(CalcDamageInfo const* damageInfo, bool durabilityLoss);
          float CalculateDamage(WeaponAttackType attType, bool normalized, uint8 index = 0) const;
 diff --git a/src/game/Server/Protocol/Opcodes.cpp b/src/game/Server/Protocol/Opcodes.cpp
+index d64b97e..efaf91c 100644
 --- a/src/game/Server/Protocol/Opcodes.cpp
 +++ b/src/game/Server/Protocol/Opcodes.cpp
-@@ -69,6 +69,8 @@
+@@ -69,6 +69,8 @@ Handlers BuildOpcodeList()
  
      // Correspondence between opcodes and their names
      DEFINE_HANDLER(CMSG_SKATECRAFT_VISUAL, STATUS_LOGGEDIN, PACKET_PROCESS_MAP, &WorldSession::HandleSkatecraftVisual);
@@ -456,9 +466,10 @@ diff --git a/src/game/Server/Protocol/Opcodes.cpp b/src/game/Server/Protocol/Opc
      INVALID_PACKET(MSG_NULL_ACTION,                   UnhandleReason::Invalid);
      INVALID_PACKET(CMSG_BOOTME,                       UnhandleReason::Unhandled);
 diff --git a/src/game/Server/Protocol/Opcodes_1_12_1.h b/src/game/Server/Protocol/Opcodes_1_12_1.h
+index 1b9b3b7..430cc01 100644
 --- a/src/game/Server/Protocol/Opcodes_1_12_1.h
 +++ b/src/game/Server/Protocol/Opcodes_1_12_1.h
-@@ -828,5 +828,7 @@
+@@ -828,5 +828,7 @@ enum OpcodesList
      // World of Skatecraft extension; outside the stock 1.12.1 opcode range.
      CMSG_SKATECRAFT_VISUAL                 = 0x03f0,
      SMSG_SKATECRAFT_VISUAL                 = 0x03f1,
@@ -468,9 +479,10 @@ diff --git a/src/game/Server/Protocol/Opcodes_1_12_1.h b/src/game/Server/Protoco
 +    NUM_MSG_TYPES                          = 0x03f4
  };
 diff --git a/src/game/Server/WorldSession.cpp b/src/game/Server/WorldSession.cpp
+index 8c54d5b..da8dc60 100644
 --- a/src/game/Server/WorldSession.cpp
 +++ b/src/game/Server/WorldSession.cpp
-@@ -319,6 +319,9 @@
+@@ -319,6 +319,9 @@ void WorldSession::QueuePacket(std::unique_ptr<ClientPacket const> packet)
          auto const* chatMessage = dynamic_cast<WorldPackets::Chat::ChatMessage const*>(packet.get());
          MANGOS_ASSERT(chatMessage); // Should never happen if it's coming from `QueueBinaryPacket`
          processingStrategy = GetChatPacketProcessingType(chatMessage->type);
@@ -480,7 +492,7 @@ diff --git a/src/game/Server/WorldSession.cpp b/src/game/Server/WorldSession.cpp
      }
  
      if (processingStrategy >= PACKET_PROCESS_MAX_TYPE)
-@@ -328,6 +331,21 @@
+@@ -328,6 +331,21 @@ void WorldSession::QueuePacket(std::unique_ptr<ClientPacket const> packet)
      }
  
      // put into the correct processing queue
@@ -502,7 +514,7 @@ diff --git a/src/game/Server/WorldSession.cpp b/src/game/Server/WorldSession.cpp
      m_recvQueue[processingStrategy].add(std::move(packet));
  }
  
-@@ -642,6 +660,26 @@
+@@ -642,6 +660,26 @@ void WorldSession::ProcessPackets(PacketFilter& updater)
              ProcessAnticheatAction("Anticrash", "Exception raised", CHEAT_ACTION_KICK);
          }
      }
@@ -529,7 +541,7 @@ diff --git a/src/game/Server/WorldSession.cpp b/src/game/Server/WorldSession.cpp
  }
  
  
-@@ -649,6 +692,12 @@
+@@ -649,6 +687,12 @@ void WorldSession::ClearIncomingPacketsByType(PacketProcessing type)
  {
      ASSERT(type < PACKET_PROCESS_MAX_TYPE);
      m_recvQueue[type].clear();
@@ -543,6 +555,7 @@ diff --git a/src/game/Server/WorldSession.cpp b/src/game/Server/WorldSession.cpp
  
  void WorldSession::SetDisconnectedSession()
 diff --git a/src/game/Server/WorldSession.h b/src/game/Server/WorldSession.h
+index 6a62a13..c995f01 100644
 --- a/src/game/Server/WorldSession.h
 +++ b/src/game/Server/WorldSession.h
 @@ -64,6 +64,7 @@
@@ -553,7 +566,7 @@ diff --git a/src/game/Server/WorldSession.h b/src/game/Server/WorldSession.h
  
  #include <memory>
  
-@@ -503,6 +504,7 @@
+@@ -503,6 +504,7 @@ class WorldSession
  
          // Movement
          void HandleSkatecraftVisual(SkatecraftVisualPacket const& packet);
@@ -561,7 +574,7 @@ diff --git a/src/game/Server/WorldSession.h b/src/game/Server/WorldSession.h
          void HandleMoveRootAck(WorldPackets::Movement::MoveRootAck const& packet);
          void HandleMoveKnockBackAck(WorldPackets::Movement::MoveKnockBackAck const& packet);
          void HandleMoveTeleportAckOpcode(WorldPackets::Movement::MoveTeleportAck const& packet);
-@@ -863,6 +865,9 @@
+@@ -863,6 +865,9 @@ class WorldSession
          std::shared_ptr<WorldSocket> m_socket;
          std::string m_remoteIpAddress; // might also be "<BOT>"
          LockedQueue<std::unique_ptr<ClientPacket const>, std::mutex> m_recvQueue[PACKET_PROCESS_MAX_TYPE];
@@ -571,10 +584,49 @@ diff --git a/src/game/Server/WorldSession.h b/src/game/Server/WorldSession.h
          bool m_receivedPacketType[PACKET_PROCESS_MAX_TYPE];
          uint32 m_floodPacketsCount[FLOOD_MAX_OPCODES_TYPE];
          bool m_connected;
+diff --git a/src/game/Skatecraft.cpp b/src/game/Skatecraft.cpp
+index e6b748d..87316e8 100644
+--- a/src/game/Skatecraft.cpp
++++ b/src/game/Skatecraft.cpp
+@@ -1,4 +1,5 @@
+ #include "Skatecraft.h"
++#include "Tarnished.h"
+ #include "Database/DBCStores.h"
+ #include "Chat.h"
+ #include "Player.h"
+@@ -327,6 +328,7 @@ namespace Skatecraft
+     void LoadSpells()
+     {
+         // SpellCastTimes.dbc: 1 instant, 16 1.5 s. SpellDuration.dbc: 21 until cancelled, 2 30 s, 18 20 s, 36 1 s.
++        AddSpell(Tarnished::SPELL_STANCE, "Tarnished Stance", ICON_SPRINT, 1, 21, 0, true);
+         AddSpell(SPELL_SUMMON_SKATEBOARD, "Summon Skateboard", ICON_MECHASTRIDER, 16, 21, 0, true);
+         AddSpell(SPELL_OLLIE_BOOST, "Ollie Boost", ICON_BOOTS, 1, 2, 2 * MINUTE * IN_MILLISECONDS, true);
+         AddSpell(SPELL_ROCKET_BOOST, "Rocket Boost", ICON_FLARE, 1, 36, 30 * IN_MILLISECONDS, true);
+@@ -344,6 +346,8 @@ namespace Skatecraft
+ 
+     void OnLogin(Player* player)
+     {
++        if (!player->HasSpell(Tarnished::SPELL_STANCE))
++            player->LearnSpell(Tarnished::SPELL_STANCE, false);
+         if (!sSkillLineStore.LookupEntry(SKILL_SKATEBOARDING))
+             return;
+         if (!player->HasSkill(SKILL_SKATEBOARDING))
+@@ -415,6 +419,10 @@ namespace Skatecraft
+     {
+         switch (spell->Id)
+         {
++            case Tarnished::SPELL_STANCE:
++                if (!Tarnished::CanEnter(caster->ToPlayer()))
++                    return SPELL_FAILED_NOT_HERE;
++                break;
+             case SPELL_SUMMON_SKATEBOARD:
+                 if (caster->IsMounted())
+                     return SPELL_FAILED_NOT_MOUNTED;
 diff --git a/src/game/Spells/Spell.cpp b/src/game/Spells/Spell.cpp
+index abd1b5d..15421cf 100644
 --- a/src/game/Spells/Spell.cpp
 +++ b/src/game/Spells/Spell.cpp
-@@ -907,12 +907,15 @@
+@@ -907,12 +907,15 @@ void Spell::AddUnitTarget(Unit* pTarget, SpellEffectIndex effIndex)
      targetInfo.meleeHitInfo = 0x0;
      targetInfo.damage = 0;
      targetInfo.isCrit = false;
@@ -590,7 +642,7 @@ diff --git a/src/game/Spells/Spell.cpp b/src/game/Spells/Spell.cpp
  
      // spell fly from visual cast object
      SpellCaster* affectiveObject = GetAffectiveCasterObject();
-@@ -1142,6 +1145,65 @@
+@@ -1142,6 +1145,65 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
      if (!unit)
          return;
  
@@ -656,7 +708,7 @@ diff --git a/src/game/Spells/Spell.cpp b/src/game/Spells/Spell.cpp
      if (getState() == SPELL_STATE_DELAYED && (WorldTimer::getMSTime() - target->timeDelay) <= unit->m_lastSanctuaryTime && !m_spellInfo->IsPositiveSpell())
          return;
  
-@@ -1194,7 +1256,7 @@
+@@ -1194,7 +1256,7 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
          procVictim   = PROC_FLAG_NONE;
      }
  
@@ -665,7 +717,7 @@ diff --git a/src/game/Spells/Spell.cpp b/src/game/Spells/Spell.cpp
      {
          // mark effects that were already handled in Spell::HandleDelayedSpellLaunch on spell launch as processed
          for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i)
-@@ -1367,14 +1429,15 @@
+@@ -1367,14 +1429,15 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
          }
      }
      // Do damage and triggers
@@ -683,16 +735,15 @@ diff --git a/src/game/Spells/Spell.cpp b/src/game/Spells/Spell.cpp
          {
              // Copy damage calculated from HandleDelayedSpellLaunch
              damageInfo.damage = m_damage;
-@@ -1411,9 +1474,19 @@
+@@ -1411,9 +1474,19 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
                  damageInfo.damage += damageInfo.damage / 2; // 150% of normal damage
          }
  
 -        uint32 const originalDamage = damageInfo.damage;
--
--        unitTarget->CalculateAbsorbResistBlock(pCaster, &damageInfo, m_spellInfo, BASE_ATTACK, this);
 +        uint32 const originalDamage = target->tarnishedPrepared ?
 +            target->tarnishedUnresisted : damageInfo.damage;
-+
+ 
+-        unitTarget->CalculateAbsorbResistBlock(pCaster, &damageInfo, m_spellInfo, BASE_ATTACK, this);
 +        if (target->tarnishedPrepared && target->tarnishedStock)
 +            damageInfo.resist = target->tarnishedResist;
 +        unitTarget->CalculateAbsorbResistBlock(pCaster, &damageInfo, m_spellInfo, BASE_ATTACK, this,
@@ -706,18 +757,33 @@ diff --git a/src/game/Spells/Spell.cpp b/src/game/Spells/Spell.cpp
          m_absorbed = damageInfo.absorb;
  
          pCaster->DealDamageMods(damageInfo.target, damageInfo.damage, &damageInfo.absorb);
+@@ -5302,6 +5375,11 @@ void Spell::RemoveChanneledAuraHolder(SpellAuraHolder* holder, AuraRemoveMode mo
+ 
+ SpellCastResult Spell::CheckCast(bool strict)
+ {
++    // Fork policy: preserve native casts/procs and queued swing modifiers, but replace direct
++    // melee abilities with the equipped ER moveset (all ranks, by DBC damage class).
++    if (!m_IsTriggeredSpell && m_casterUnit && m_casterUnit->HasAura(Tarnished::SPELL_STANCE) &&
++        Tarnished::MeleeAbility(m_spellInfo))
++        return SPELL_FAILED_NOT_HERE;
+     if (m_casterUnit)
+     {
+         SpellCastResult skate = Skatecraft::CheckCast(m_casterUnit, m_spellInfo);
 diff --git a/src/game/Spells/Spell.h b/src/game/Spells/Spell.h
+index 744c7f4..3970938 100644
 --- a/src/game/Spells/Spell.h
 +++ b/src/game/Spells/Spell.h
-@@ -303,6 +303,7 @@
+@@ -303,6 +303,9 @@ class Spell
          bool IsRangedAttackResetSpell() const { return !m_IsTriggeredSpell && m_spellInfo->IsRangedSpell() && m_spellInfo->HasSpellInterruptFlag(SPELL_INTERRUPT_FLAG_COMBAT); }
  
          bool IsDeletable() const { return !m_referencedFromCurrentSpell && !m_executeStack; }
++        bool m_tarnishedWeaponOverride = false;
++        uint32 m_tarnishedWeaponDamage = 0;
 +        SpellMissInfo m_tarnishedStockMiss = SPELL_MISS_NONE;
          void SetReferencedFromCurrent(bool yes) { m_referencedFromCurrentSpell = yes; }
          void SetExecutedCurrently(bool yes) { if (yes) ++m_executeStack; else --m_executeStack; }
          uint64 GetDelayStart() const { return m_delayStart; }
-@@ -476,6 +477,14 @@
+@@ -476,6 +479,14 @@ class Spell
              bool   processed:1;
              bool   isCrit : 1;
              bool   deleted:1;
@@ -732,14 +798,34 @@ diff --git a/src/game/Spells/Spell.h b/src/game/Spells/Spell.h
          };
  
          struct GOTargetInfo
+diff --git a/src/game/Spells/SpellEffects.cpp b/src/game/Spells/SpellEffects.cpp
+index 946b198..aff970b 100644
+--- a/src/game/Spells/SpellEffects.cpp
++++ b/src/game/Spells/SpellEffects.cpp
+@@ -3479,8 +3479,12 @@ void Spell::EffectWeaponDmg(SpellEffectIndex effIdx)
+         bonus = bonus * weapon_total_pct;
+     }
+ 
++    // A queued Tarnished strike retains its ER motion value; the native spell still adds
++    // its own bonus and handles costs, armor, critical strikes, threat and procs once.
++    if (m_tarnishedWeaponOverride)
++        bonus += m_tarnishedWeaponDamage * weaponDamagePercentMod;
+     // apply SPELL_EFFECT_WEAPON_PERCENT_DAMAGE multiplier to base weapon swing damage
+-    for (uint8 i = 0; i < m_casterUnit->GetWeaponDamageCount(m_attackType); i++)
++    for (uint8 i = 0; !m_tarnishedWeaponOverride && i < m_casterUnit->GetWeaponDamageCount(m_attackType); i++)
+     {
+         if (unitTarget->IsImmuneToDamage(GetSchoolMask(m_casterUnit->GetWeaponDamageSchool(m_attackType, i))))
+             continue;
 diff --git a/src/game/Tarnished.cpp b/src/game/Tarnished.cpp
 new file mode 100644
+index 0000000..18d6dc5
 --- /dev/null
 +++ b/src/game/Tarnished.cpp
-@@ -0,0 +1,536 @@
+@@ -0,0 +1,606 @@
 +// SPDX-License-Identifier: MIT OR Apache-2.0
 +// v3 capability: ordered stance/combat, coalesced visual poses; see protocol/tarnished.rs.
 +#include "Tarnished.h"
++#include "Spell.h"
 +#include "Chat.h"
 +#include "Player.h"
 +#include "Map.h"
@@ -763,18 +849,44 @@ new file mode 100644
 +
 +    static bool Equipped(Player const* player)
 +    {
-+        Item* sword = player->GetWeaponForAttack(BASE_ATTACK, true, true);
-+        Item* shield = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND);
-+        return player->GetClass() == CLASS_WARRIOR && sword && shield && !shield->IsBroken() &&
-+            sword->GetProto()->Class == ITEM_CLASS_WEAPON &&
-+            sword->GetProto()->SubClass == ITEM_SUBCLASS_WEAPON_SWORD &&
-+            shield->GetProto()->Class == ITEM_CLASS_ARMOR &&
-+            shield->GetProto()->SubClass == ITEM_SUBCLASS_ARMOR_SHIELD &&
-+            player->IsAlive() && !player->IsMounted() && !player->IsNoWeaponShapeShift() &&
++        return player->IsAlive() && !player->IsMounted() && !player->IsNoWeaponShapeShift() &&
 +            !player->skateVisual.active && !player->IsInWater() &&
 +            !player->HasAura(Skatecraft::SPELL_SUMMON_SKATEBOARD) &&
 +            !player->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_STUNNED | UNIT_FLAG_CONFUSED |
 +                UNIT_FLAG_FLEEING | UNIT_FLAG_TAXI_FLIGHT | UNIT_FLAG_REMOVE_CLIENT_CONTROL);
++    }
++
++    bool CanEnter(Player const* player)
++    {
++        return player && player->tarnished.capable && Equipped(player);
++    }
++
++    // Keep these armament codes aligned with benilla_tarnished::weapon::map_weapon.
++    static uint8 Weapon(Item const* item)
++    {
++        if (!item || item->IsBroken()) return 20;
++        auto proto = item->GetProto();
++        if (proto->Class == ITEM_CLASS_ARMOR && proto->SubClass == ITEM_SUBCLASS_ARMOR_SHIELD) return 24;
++        if (proto->Class != ITEM_CLASS_WEAPON) return 20;
++        switch (proto->SubClass)
++        {
++            case 0: return 7; case 1: return 16;
++            case 4: return 6; case 5: return 14;
++            case 6: return 9; case 7: return 1; case 8: return 3;
++            case 10: return 13; case 13: return 20; case 15: return 0;
++            case 2: case 3: case 16: case 18: case 19: case 20: return 20;
++            default: return proto->InventoryType == INVTYPE_2HWEAPON ? 3 : 1;
++        }
++    }
++
++    static bool Armament(Player const* player, uint8 weapon, uint8 kind)
++    {
++        Item* main = player->GetWeaponForAttack(BASE_ATTACK, true, true);
++        Item* off = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_OFFHAND);
++        uint8 right = Weapon(main), left = Weapon(off);
++        bool two = main && main->GetProto()->InventoryType == INVTYPE_2HWEAPON;
++        if (kind >= 26) return !two && right == left && right != 24 && weapon == right;
++        return weapon == ((kind >= 20) ? (two ? 20 : left) : right);
 +    }
 +
 +    bool Active(Unit const* unit)
@@ -782,7 +894,7 @@ new file mode 100644
 +        Player const* player = unit ? unit->ToPlayer() : nullptr;
 +        return player && player->IsInWorld() && player->IsAlive() &&
 +            !player->IsBeingTeleported() && player->tarnished.capable &&
-+            player->tarnished.active && Equipped(player) &&
++            player->tarnished.active && player->HasAura(SPELL_STANCE) && Equipped(player) &&
 +            WorldTimer::getMSTimeDiff(player->tarnished.poseReceipt, WorldTimer::getMSTime()) <= 2000;
 +    }
 +
@@ -793,6 +905,11 @@ new file mode 100644
 +            source->CanAttack(target, melee && source->IsPlayer() && target->IsCreature()) && source->IsWithinLOSInMap(target) &&
 +            (!melee || source->IsWithinDistInMap(target, 8.f)) &&
 +            !(target->IsCreature() && target->ToCreature()->IsInEvadeMode());
++    }
++
++    bool MeleeAbility(SpellEntry const* spell)
++    {
++        return spell->DmgClass == SPELL_DAMAGE_CLASS_MELEE && !spell->IsNextMeleeSwingSpell();
 +    }
 +
 +    bool SpellSupported(SpellEntry const* spell)
@@ -873,6 +990,7 @@ new file mode 100644
 +    {
 +        auto& state = player->tarnished;
 +        StopPose(player);
++        player->RemoveAurasDueToSpell(SPELL_STANCE);
 +        auto pending = std::move(state.pending);
 +        state.pending.clear();
 +        for (auto& hit : pending)
@@ -886,7 +1004,12 @@ new file mode 100644
 +    {
 +        auto& state = player->tarnished;
 +        if (state.active && !Active(player))
++        {
 +            StopPose(player);
++            player->RemoveAurasDueToSpell(SPELL_STANCE);
++        }
++        if (player->HasAura(SPELL_STANCE) && !Equipped(player))
++            player->RemoveAurasDueToSpell(SPELL_STANCE);
 +        uint32 now = WorldTimer::getMSTime();
 +        while (!state.pending.empty() &&
 +               (!Active(player) || WorldTimer::getMSTimeDiff(state.pending.front().receipt, now) >= TIMEOUT))
@@ -1076,16 +1199,32 @@ new file mode 100644
 +        return true;
 +    }
 +
++    static bool ReplaceSwing(Player* player, Unit* target, uint32 damage, uint8 flags)
++    {
++        Spell* queued = player->GetCurrentSpell(CURRENT_MELEE_SPELL);
++        if (!queued) return false;
++        // Keep native costs, spell effects, threat and queue removal. The ER base damage already
++        // contains its motion value, but the native spell owns its own critical strike roll.
++        queued->m_tarnishedWeaponDamage = flags & 1 ? damage / 2 : damage;
++        queued->m_tarnishedWeaponOverride = true;
++        queued->m_targets.setUnitTarget(target);
++        queued->cast();
++        Spell* remaining = player->GetCurrentSpell(CURRENT_MELEE_SPELL);
++        if (!remaining || remaining->isSuccessCast()) return true;
++        remaining->m_tarnishedWeaponOverride = false;
++        return false;
++    }
++
 +    static void Attack(Player* player, ByteBuffer data, uint32 received)
 +    {
-+        if (!Active(player) || data.size() < 30)
++        if (!Active(player) || player->IsNonMeleeSpellCasted(false, false, true) || data.size() < 30)
 +            return;
 +        data.rpos(2);
 +        uint32 sequence, id, sample;
 +        uint8 weapon, kind, count;
 +        data >> sequence >> id >> sample >> weapon >> kind >> count;
-+        // The approved slice is one-handed sword plus shield, not arbitrary movesets.
-+        if ((weapon != 1 && weapon != 24) || kind > 19 || !count || count > 16 ||
++        // Validate the reported moveset against the currently equipped hands.
++        if (weapon > 24 || kind > 36 || !Armament(player, weapon, kind) || !count || count > 16 ||
 +            (data.size() != 17 + size_t(count) * 13 && data.size() != 21 + size_t(count) * 13))
 +            return;
 +        struct Contact { Unit* target; uint32 damage; uint8 flags; };
@@ -1117,7 +1256,10 @@ new file mode 100644
 +            !Budget(state, received, false, false))
 +            return;
 +        if (!sameSwing)
++        {
 +            state.attackTargets.clear();
++            state.replacedAttack = false;
++        }
 +        state.attackWeapon = weapon;
 +        state.attackKind = kind;
 +        state.attackStamina = stamina;
@@ -1130,11 +1272,24 @@ new file mode 100644
 +        relay << uint8(0x12) << uint64(player->GetGUID()) << received;
 +        relay.append(data.contents(), data.size());
 +        Relay(player, relay);
++        if (state.replacedAttack)
++            return;
++        if (!sameSwing && ReplaceSwing(player, contacts.front().target, contacts.front().damage, contacts.front().flags))
++        {
++            state.replacedAttack = true;
++            return;
++        }
 +        for (auto const& contact : contacts)
 +        {
 +            CalcDamageInfo hit;
 +            // Offence supplies pre-armour damage; native bonus/crit/glance rolls must not repeat it.
 +            player->CalculateTarnishedMelee(contact.target, contact.damage, contact.flags, &hit);
++            if (kind >= 20 && kind <= 25)
++            {
++                hit.attackType = OFF_ATTACK;
++                hit.procAttacker = PROC_FLAG_DEAL_MELEE_SWING | PROC_FLAG_OFF_HAND_WEAPON_SWING;
++                hit.HitInfo |= HITINFO_LEFTSWING;
++            }
 +            auto finish = [hit](Unit* source, Player* defender, Answer const* answer) mutable
 +            {
 +                if (!source)
@@ -1242,7 +1397,7 @@ new file mode 100644
 +        {
 +            uint32 bout, sequence;
 +            bool active;
-+            if (!Pose(data, bout, sequence, active) || (active && !Equipped(player)) ||
++            if (!Pose(data, bout, sequence, active) || (active && (!CanEnter(player) || !player->HasAura(SPELL_STANCE))) ||
 +                !PoseOrder(state, kind, bout, sequence, active) ||
 +                !Budget(state, received, kind == 4, state.active && !active))
 +                return;
@@ -1275,9 +1430,10 @@ new file mode 100644
 +}
 diff --git a/src/game/Tarnished.h b/src/game/Tarnished.h
 new file mode 100644
+index 0000000..5abd7ad
 --- /dev/null
 +++ b/src/game/Tarnished.h
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,97 @@
 +// SPDX-License-Identifier: MIT OR Apache-2.0
 +#ifndef TARNISHED_H
 +#define TARNISHED_H
@@ -1313,6 +1469,7 @@ new file mode 100644
 +
 +namespace Tarnished
 +{
++    constexpr uint32 SPELL_STANCE = 60006;
 +    constexpr uint32 TIMEOUT = 350;
 +    // A null answer resumes precisely the stock continuation.
 +    struct Answer
@@ -1352,6 +1509,7 @@ new file mode 100644
 +        std::unordered_set<uint64> attackTargets;
 +        bool hasCommand = false;
 +        bool hasAttack = false;
++        bool replacedAttack = false;
 +        uint32 budgetTime = 0;
 +        float poseTokens = 3.f;
 +        float commandTokens = 64.f;
@@ -1361,6 +1519,8 @@ new file mode 100644
 +    bool Addon(Player*, std::string const&);
 +    void Handle(Player*, ByteBuffer, uint32);
 +    bool Active(Unit const*);
++    bool CanEnter(Player const*);
++    bool MeleeAbility(SpellEntry const*);
 +    bool SpellSupported(SpellEntry const*);
 +    bool Defer(Unit*, Player*, uint32, uint8, bool,
 +               std::function<void(Unit*, Player*, Answer const*)>,
@@ -1371,15 +1531,3 @@ new file mode 100644
 +    void QueueCreate(Player const*, Player*, UpdateData&);
 +}
 +#endif
-diff --git a/src/shared/Progression.h b/src/shared/Progression.h
---- a/src/shared/Progression.h
-+++ b/src/shared/Progression.h
-@@ -33,7 +33,7 @@
- // Change this to define which build of the game to emulate.
- // Has an effect on things such as core gameplay mechanics,
- // loading of client data, and network packets structure.
--#define SUPPORTED_CLIENT_BUILD 5875
-+#define SUPPORTED_CLIENT_BUILD CLIENT_BUILD_1_12_1
- 
- // This defines which client builds the world server will accept.
- #if SUPPORTED_CLIENT_BUILD >= CLIENT_BUILD_1_12_1

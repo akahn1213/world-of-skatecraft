@@ -340,6 +340,22 @@ fn send_spell_cast(
 ) {
     let now = Instant::now();
     let def = spells.and_then(|s| s.catalog.get(spell_id));
+    let stance = ctx.rel.self_store.is_some_and(crate::tarnished::has_stance);
+    if spell_id == benilla_formats::skatecraft::SPELL_TARNISHED_STANCE {
+        if stance {
+            let _ = commands.0.send(ClientCommand::CancelAura { spell_id });
+            return;
+        }
+        if !benilla_tarnished::er_data_compiled() {
+            warn!("{}", benilla_tarnished::unavailable());
+            cast_errors.push_local(spell_id, 0x35);
+            return;
+        }
+    }
+    if stance && def.is_some_and(|spell| spell.tarnished_melee_ability()) {
+        cast_errors.push_local(spell_id, 0x35); // SPELL_FAILED_NOT_HERE
+        return;
+    }
     // TryCast's first branch (`6e4bce`, ahead of every gate): an `Effect[0] == TRADE_SKILL` cast
     // never reaches the wire; the crafting window opens instead.
     if def.is_some_and(|d| d.effects[0] == benilla_formats::SPELL_EFFECT_TRADE_SKILL) {
