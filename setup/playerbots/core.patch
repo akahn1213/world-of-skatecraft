@@ -1,0 +1,121 @@
+diff --git a/src/game/CMakeLists.txt b/src/game/CMakeLists.txt
+index 782d53c..524a03b 100644
+--- a/src/game/CMakeLists.txt
++++ b/src/game/CMakeLists.txt
+@@ -672,3 +672,9 @@ else()
+       )
+   endif()
+ endif()
++
++# Fork: optional full CMaNGOS autonomous Playerbots, separate from native party bots.
++option(BUILD_PLAYERBOTS "Build experimental autonomous Playerbots port" OFF)
++if(BUILD_PLAYERBOTS)
++  include(AutonomousBots/vmangos.cmake)
++endif()
+diff --git a/src/game/Movement/TargetedMovementGenerator.h b/src/game/Movement/TargetedMovementGenerator.h
+index af95b28..5472414 100644
+--- a/src/game/Movement/TargetedMovementGenerator.h
++++ b/src/game/Movement/TargetedMovementGenerator.h
+@@ -56,6 +56,8 @@ class TargetedMovementGeneratorMedium
+         }
+ 
+         Unit* GetTarget() const { return i_target.getTarget(); }
++        float GetAngle() const { return m_fAngle; }
++        float GetOffset() const { return m_fOffset; }
+ 
+         void UnitSpeedChanged() override { m_bRecalculateTravel=true; }
+         void UpdateFinalDistance(float fDistance) override;
+diff --git a/src/game/Objects/Player.h b/src/game/Objects/Player.h
+index 5341e96..cb301b3 100644
+--- a/src/game/Objects/Player.h
++++ b/src/game/Objects/Player.h
+@@ -63,6 +63,8 @@ class Spell;
+ class Item;
+ class ZoneScript;
+ class PlayerAI;
++class PlayerbotAI;
++class PlayerbotMgr;
+ class PlayerBroadcaster;
+ class BattleGround;
+ 
+@@ -1414,9 +1416,9 @@ class Player final: public Unit
+         void UpdateFreeTalentPoints(bool resetIfNeed = true);
+         uint32 GetResetTalentsCost() const;
+         void UpdateResetTalentsMultiplier() const;
+-        uint32 CalculateTalentsPoints() const;
+         void SendTalentWipeConfirm(ObjectGuid trainerGuid) const;
+     public:
++        uint32 CalculateTalentsPoints() const;
+         uint32 GetFreeTalentPoints() const { return GetUInt32Value(PLAYER_CHARACTER_POINTS1); }
+         void SetFreeTalentPoints(uint32 points) { SetUInt32Value(PLAYER_CHARACTER_POINTS1, points); }
+         bool ResetTalents(bool noCost = false);
+@@ -1961,6 +1963,15 @@ class Player final: public Unit
+ 
+         // PlayerAI management
+         PlayerAI* m_AI;
++#ifdef ENABLE_PLAYERBOTS
++        PlayerbotAI* GetPlayerbotAI() const { return m_playerbotAI.get(); }
++        PlayerbotMgr* GetPlayerbotMgr() const { return m_playerbotMgr.get(); }
++        bool isRealPlayer() const { return !m_playerbotAI && !IsBot(); }
++    private:
++        std::unique_ptr<PlayerbotAI> m_playerbotAI;
++        std::unique_ptr<PlayerbotMgr> m_playerbotMgr;
++    public:
++#endif
+         PlayerAI* AI() { return m_AI; }
+         void SetAI(PlayerAI* otherAI) { m_AI = otherAI; }
+         void SetControlledBy(Unit* pWho);
+diff --git a/src/game/Server/WorldPacket.h b/src/game/Server/WorldPacket.h
+index 0f30b20..77e1f8a 100644
+--- a/src/game/Server/WorldPacket.h
++++ b/src/game/Server/WorldPacket.h
+@@ -45,6 +45,13 @@ class WorldPacket : public ByteBuffer
+         {
+         }
+ 
++        WorldPacket& operator=(WorldPacket const& rhs)
++        {
++            if (this != &rhs)
++                *this = WorldPacket(rhs);
++            return *this;
++        }
++
+         WorldPacket& operator=(WorldPacket&& rhs)
+         {
+             m_opcode = rhs.m_opcode;
+diff --git a/src/game/SharedDefines.h b/src/game/SharedDefines.h
+index 412d396..c36e244 100644
+--- a/src/game/SharedDefines.h
++++ b/src/game/SharedDefines.h
+@@ -1795,10 +1795,10 @@ struct Position
+ {
+     Position() = default;
+     Position(float position_x, float position_y, float position_z, float orientation) : x(position_x), y(position_y), z(position_z), o(orientation) {}
+-    float x = 0.0f;
+-    float y = 0.0f;
+-    float z = 0.0f;
+-    float o = 0.0f;
++    union { float x = 0.0f; float coord_x; };
++    union { float y = 0.0f; float coord_y; };
++    union { float z = 0.0f; float coord_z; };
++    union { float o = 0.0f; float orientation; };
+ 
+     bool IsEmpty() const
+     {
+@@ -1806,11 +1806,15 @@ struct Position
+     }
+ 
+     WorldLocation WithMapId(uint32 mapId) const;
++    float GetPositionX() const { return x; }
++    float GetPositionY() const { return y; }
++    float GetPositionZ() const { return z; }
++    float GetPositionO() const { return o; }
+ };
+ 
+ struct WorldLocation : public Position
+ {
+-    uint32 mapId = 0;
++    union { uint32 mapId = 0; uint32 mapid; };
+     explicit WorldLocation(uint32 _mapid = 0, float _x = 0, float _y = 0, float _z = 0, float _o = 0)
+         : Position(_x, _y, _z, _o), mapId(_mapid) {}
+     WorldLocation(WorldLocation const& loc)

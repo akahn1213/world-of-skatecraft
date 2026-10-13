@@ -1,0 +1,14 @@
+{
+  "vmangos": {
+    "url": "https://github.com/vmangos/core.git",
+    "revision": "0e3ff01e76d4758e8a7c3108b2717cc785ed56fa"
+  },
+  "playerbots": {
+    "url": "https://github.com/cmangos/playerbots.git",
+    "revision": "e748a4c946ded0985dde69e4e6b19c1403249583"
+  },
+  "cmangos_reference": {
+    "url": "https://github.com/cmangos/mangos-classic.git",
+    "revision": "8ec338a1704e7dcb1c0213eb7ed58f9231ade40f"
+  }
+}
