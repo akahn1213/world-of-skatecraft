@@ -1,5 +1,4 @@
-# This experimental target deliberately includes the whole module. Do not omit failing
-# strategies to make a partial port appear complete. Core lifecycle hooks are still pending.
+# Compile the complete upstream vanilla module; no strategies are excluded.
 find_package(Boost 1.70 REQUIRED)
 file(GLOB_RECURSE autonomous_bot_sources CONFIGURE_DEPENDS
   AutonomousBots/playerbot/*.cpp AutonomousBots/ahbot/*.cpp)
@@ -9,9 +8,25 @@ target_include_directories(autonomous_playerbots PRIVATE
 target_link_libraries(autonomous_playerbots PRIVATE shared Detour g3dlite)
 target_compile_definitions(autonomous_playerbots PRIVATE CMANGOS VMANGOS MANGOSBOT_ZERO ENABLE_PLAYERBOTS)
 set_property(TARGET autonomous_playerbots PROPERTY CXX_STANDARD 20)
-if(MSVC)
+option(PLAYERBOTS_USE_PCH "Precompile the bot module's shared compatibility headers" ON)
+if(PLAYERBOTS_USE_PCH)
+  target_precompile_headers(autonomous_playerbots PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/AutonomousBots/botpch.h)
+elseif(MSVC)
   target_compile_options(autonomous_playerbots PRIVATE /FI${CMAKE_CURRENT_SOURCE_DIR}/AutonomousBots/botpch.h)
 else()
   target_compile_options(autonomous_playerbots PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/AutonomousBots/botpch.h)
 endif()
-# No linkage into the runnable server until module compilation and lifecycle integration pass.
+# Public definitions keep Player's layout consistent in all server translation units.
+target_compile_definitions(game PUBLIC ENABLE_PLAYERBOTS)
+target_compile_features(game PUBLIC cxx_std_20)
+target_sources(game PRIVATE $<TARGET_OBJECTS:autonomous_playerbots>)
+configure_file(AutonomousBots/playerbot/aiplayerbot.conf.dist.in
+  ${CMAKE_CURRENT_BINARY_DIR}/aiplayerbot.conf.dist @ONLY)
+configure_file(AutonomousBots/ahbot/ahbot.conf.dist.in
+  ${CMAKE_CURRENT_BINARY_DIR}/playerbots-ahbot.conf.dist @ONLY)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/aiplayerbot.conf.dist
+  ${CMAKE_CURRENT_BINARY_DIR}/playerbots-ahbot.conf.dist DESTINATION ${CONF_DIR})
+
+install(FILES ${CMAKE_SOURCE_DIR}/sql/playerbots/characters.sql
+  ${CMAKE_SOURCE_DIR}/sql/playerbots/world.sql DESTINATION share/vmangos/playerbots)

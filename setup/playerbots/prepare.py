@@ -2,7 +2,7 @@
 """Prepare the complete, pinned experimental Playerbots port outside the live deployment.
 
 This prepares source only. It never imports SQL, changes compose, or enables bots.
-The autonomous_playerbots CMake target currently fails: see README.md.
+Build the mangosd target with BUILD_PLAYERBOTS=ON; see README.md for installation.
 """
 import argparse
 import json
@@ -18,6 +18,7 @@ ROOT = HERE.parents[1]
 SOURCES = json.loads((HERE / "sources.json").read_text())
 sys.path.insert(0, str(ROOT / "setup/vmangos"))
 from prepare_patch import prepare as prepare_tarnished
+from prepare_sql import prepare_sql
 
 
 def run(*args, cwd=None):
@@ -69,6 +70,7 @@ def prepare(destination, core_cache=None, bots_cache=None):
         apply(bots, (HERE / "module.patch").read_bytes(), normalize=True)
         shutil.copy2(HERE / "vmangos.cmake", bots / "vmangos.cmake")
         shutil.copy2(HERE / "sources.json", tree / "playerbots-sources.json")
+        prepare_sql(bots, tree / "sql/playerbots")
         tree.rename(destination)
     return destination
 
@@ -83,7 +85,7 @@ def main():
         output = prepare(args.destination, args.core_cache, args.bots_cache)
     except (ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"Playerbots source preparation failed: {error}\n")
-    print(f"Prepared experimental source at {output}. This is not a runnable Playerbots integration.")
+    print(f"Prepared Playerbots source at {output}. Build mangosd and install the bot schema/configuration before enabling bots.")
 
 
 if __name__ == "__main__":

@@ -1,99 +1,146 @@
-# CMaNGOS Playerbots port to vmangos — experimental
+# CMaNGOS Playerbots for vmangos
 
-**This is an incomplete source port, not an installable bot feature.** The full module
-currently fails compilation. The existing server builder and deployment are unchanged;
-this directory prepares an isolated development tree only. Do not import the upstream SQL
-into an existing vmangos database or deploy this tree as a working Playerbots server.
+This opt-in server build integrates the pinned vanilla CMaNGOS Playerbots module into
+vmangos, on top of the Skatecraft and Tarnished patches. Bots use ordinary WoW mechanics;
+they do not skate or use Tarnished stance. Human clients keep both integrations. No client
+rebuild is required for Playerbots.
 
-The intended scope is the complete CMaNGOS Playerbots module for vanilla: autonomous
-population, questing, travel, progression, combat, groups, and the module's supporting systems.
-Bots will use ordinary WoW mechanics. Skatecraft and Tarnished remain available to human
-clients through the existing patches, which are applied before this port.
+The port includes autonomous population and progression, class combat strategies, quests,
+travel and transports, loot, gathering and professions, equipment, trainers, groups, guilds,
+mail, auctions, battlegrounds, dungeon/raid strategies, chat, and the upstream debugging tools.
+These are the vanilla features of the pinned source, not the expansion-specific features of
+CMaNGOS TBC/WotLK or AzerothCore's `mod-playerbots`.
 
-## Sources and adaptation
+The server owns persistent socketless bot sessions. AI decisions, packet dispatch, login
+selection, auctions, and remote commands run on the world thread after map updates finish.
+Navigation uses vmangos's actual maps/vmaps/mmaps, including route queries without a player
+object. Native packet handlers still validate bot requests. The native `.bot` commands remain
+available; this module uses `.playerbot` and `.rndbot`.
 
-`sources.json` pins vmangos, the complete `cmangos/playerbots` source, and the CMaNGOS
-Classic reference used to identify integration hooks. No moving branch is used to prepare a
-build. The upstream bot source, including its SQL/configuration and original copyright
-notices, is fetched intact. The server-side code retains its upstream GPL licensing; this
-is separate from the Rust client's licensing. No extracted game assets are included.
+## Build
 
-- `core.patch`: initial vmangos compatibility changes and an opt-in compilation target.
-- `module.patch`: explicit header/API translations against the pinned module.
-- `includes.json`: the header mapping used during the initial adaptation.
-- `vmangos.cmake`: all upstream bot and auction-bot translation units, with vanilla selection.
-  No failing strategies are omitted. Objects are **not linked into the runnable server yet**.
-- `prepare.py`: fetch/check pins, apply both existing gameplay patches, then apply this port.
-  It refuses existing destinations and publishes the prepared tree only after all patches apply.
-- `probe.py`: compile the full module or eight important integration units, retaining failures.
+Prerequisites: Git, Python 3, CMake 3.16+, Ninja, a C++20 compiler, Boost 1.70+ headers,
+MariaDB/MySQL development files, OpenSSL, and zlib development files. On Debian/Ubuntu the
+additional bot dependency is `libboost-dev`. Use a compiler new enough for C++20.
 
-## Development build
-
-Prerequisites: Git, Python 3, CMake 3.16+, Ninja, a C++20 compiler, Boost headers,
-MariaDB/MySQL development files, OpenSSL, and zlib development files. Use a fresh path
-under `.setup`; this does not modify `server/` or any databases.
+From the repository root:
 
 ```bash
 python3 setup/playerbots/prepare.py .setup/playerbots-source
 cmake -S .setup/playerbots-source -B .setup/playerbots-build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="$PWD/.setup/playerbots-install" \
+  -DCONF_DIR="$PWD/.setup/playerbots-install/etc" \
   -DBUILD_PLAYERBOTS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-  -DUSE_PCH=OFF -DENABLE_CPPTRACE=OFF -DUSE_SCRIPTS=OFF \
-  -DDEBUG_SYMBOLS=OFF -DBUILD_FOR_HOST_CPU=OFF
-python3 setup/playerbots/probe.py .setup/playerbots-build --critical
-# The acceptance build includes the complete module:
-python3 setup/playerbots/probe.py .setup/playerbots-build
+  -DUSE_SCRIPTS=ON -DUSE_PCH=OFF -DENABLE_CPPTRACE=OFF \
+  -DBUILD_EXTRACTORS=OFF -DDEBUG_SYMBOLS=OFF -DBUILD_FOR_HOST_CPU=OFF
+cmake --build .setup/playerbots-build --parallel 4
+cmake --install .setup/playerbots-build
 ```
 
-`prepare.py` accepts `--core-cache` and `--bots-cache` pointing to local Git clones.
-It still checks out the exact revisions; a missing core revision is fetched from its pinned
-upstream repository. For the hook reference, check out the CMaNGOS revision in `sources.json`.
+`USE_SCRIPTS=ON` includes vmangos's actual dungeon/raid scripts. The complete upstream
+vanilla bot module is compiled and linked into `mangosd`; no failing strategies are excluded.
+`BUILD_PLAYERBOTS=OFF` selects the server without the autonomous module. The module uses
+a shared precompiled header by default to reduce build time; `PLAYERBOTS_USE_PCH=OFF`
+selects ordinary includes for compiler diagnostics. This option is separate from the core
+server's `USE_PCH` setting.
 
-## Remaining integration requirements
+`prepare.py` refuses to overwrite an existing destination. It accepts `--core-cache` and
+`--bots-cache` pointing to local Git clones while still checking the exact pinned revisions.
+It prepares source and first-install SQL; it does not change a running deployment or database.
+The ordinary `setup/build-server.sh` image is a separate build and does not automatically
+include this opt-in module. Use this `mangosd` for the bot-enabled server.
 
-The module's headers and server facade have initial adaptations, but compilation is not
-complete. In particular, the eight-unit probe exposes differences in these interfaces:
+## Database and configuration
 
-- Bot character creation/login/logout, ownership of server sessions, packet parsing and dispatch.
-  vmangos now uses typed incoming packets in places where this module invokes raw-packet handlers.
-- Spell cooldowns, auras, threat, movement generators, pathfinding and transport APIs.
-- World-state and ScriptDevAI integration, which differ from vmangos's systems.
-- Spawn/template records and database queries. vmangos supports multiple creature entries per
-  spawn; upstream code assuming one entry needs semantic adaptation, not just field renames.
-- Quest, inventory, auction and item classification. CMaNGOS's additional consumable subclasses
-  are not populated by vmangos's vanilla item table and need an actual classification adapter.
-- Autonomous navigation: CMaNGOS builds routes without a player object and annotates navigation
-  areas. vmangos PathInfo requires a Unit and uses different terrain flags. These need real
-  pathfinding adaptations before bots can plan independent travel.
+Use a separate server instance and copies of your existing vmangos databases for the first
+in-world run. The world database must match the pinned vmangos core. Keep your existing
+vmangos authentication database and extracted vanilla DBC, maps, vmaps, and mmaps; CMaNGOS
+world databases and extracted navigation files are not interchangeable with vmangos's.
 
-The adapted quest action uses vmangos's typed quest-acceptance handler, preserving server
-validation. Auction item qualifiers read the actual auction item's random properties and
-enchantments. Spawn filtering includes every entry in vmangos's random-spawn array. WMO area
-names are loaded from the existing vanilla DBC, and bounded height queries reject terrain or
-collision surfaces outside the requested vertical range. These adaptations do not establish
-working bot runtime behavior.
+Import these **once** into the corresponding vmangos databases, using your existing database
+connection settings and actual database names:
 
-Character provisioning reads vmangos's creature and item maps, pet spell list, skill
-race/class records, and taxi-node store. Class spell provisioning uses vmangos trainer
-eligibility checks and casts the trainer's teaching spell, including its learning effects.
-The factory has scoped access to Player's private initialization helpers in the bot build.
-Queued bot requests use `WorldSession::QueueBinaryPacket` so vmangos parses them into its
-native packet types. This does not yet provide bot session ownership or update scheduling.
+```bash
+mariadb --database=characters < .setup/playerbots-source/sql/playerbots/characters.sql
+mariadb --database=mangos < .setup/playerbots-source/sql/playerbots/world.sql
+```
 
-The WMO layout has an asset-free binary fixture test using the configured core compiler:
+The generated SQL creates only bot-owned tables and includes the vanilla names, text,
+equipment weights, enchants, travel nodes, locations, and zone-level seeds. Existing bot
+tables cause installation to stop, preserving their contents. Do not use the SQL client's
+`--force` option, and do not rerun the initial seed import as an upgrade. Do not bulk-import
+the upstream SQL directory: it contains reset statements and schemas for other expansions.
+Installed copies of these two scripts are under `share/vmangos/playerbots`.
+
+Copy `aiplayerbot.conf.dist` to `aiplayerbot.conf` in the configured `CONF_DIR`, alongside your
+`mangosd.conf`. Set `AiPlayerbot.Enabled = 1`. Configure `mangosd.conf` with the test database
+connections, realm, and `DataDir` pointing to your extracted vmangos data.
+
+For a small initial population, adjust these existing settings in the copied bot config:
+
+```ini
+AiPlayerbot.Enabled = 1
+AiPlayerbot.RandomBotAutologin = 1
+AiPlayerbot.MinRandomBots = 5
+AiPlayerbot.MaxRandomBots = 10
+AiPlayerbot.RandomBotAccountCount = 2
+AiPlayerbot.RandomBotMinLevel = 1
+AiPlayerbot.RandomBotMaxLevel = 60
+AiPlayerbot.CommandServerPort = 0
+```
+
+The upstream distribution defaults to 1,000 bots and 200 generated accounts. Account count
+controls provisioning; min/max bots control the online population. Retain the rest of the
+distributed settings, then tune population and progression for your machine. First startup
+builds item/travel caches and creates bot characters, so it is slower than subsequent starts.
+
+For the module's optional auction population service, copy `playerbots-ahbot.conf.dist` to
+`playerbots-ahbot.conf` and configure `AhBot.Enabled`. This is separate from vmangos's own
+auction bot and from individual playerbots' buying/selling actions; choose one population
+service to avoid two independent services managing the same economy.
+
+Start the installed `mangosd` with your normal vmangos configuration. `.playerbot help`
+controls companions; `.playerbot add CharacterName` logs in an eligible existing character.
+The random population is controlled with `.rndbot` (GM/console), and `.playerbot-ahbot`
+controls the optional auction service. Eligibility still follows account ownership, configured
+random/free-alt accounts, guild-bot permission, and the upstream Playerbots security rules.
+Logging into a character yourself transfers control from its AI to your session.
+
+If `AiPlayerbot.CommandServerPort` is enabled, the command service listens on **127.0.0.1**.
+The upstream line protocol has no authentication; remote administrators can use an SSH port
+forward. Connections are nonblocking and commands execute on the world thread.
+
+## Validation
+
+Asset-free checks use the configured build's real compiler and native DBC loader:
 
 ```bash
 python3 setup/playerbots/test_dbc.py .setup/playerbots-build
+python3 setup/playerbots/test_config.py .setup/playerbots-build
+PLAYERBOTS_PREPARED_SOURCE="$PWD/.setup/playerbots-source" \
+PLAYERBOTS_UPSTREAM_SOURCE=/path/to/pinned/playerbots/clone \
+  python3 -m unittest discover -s setup/playerbots -p test_prepare.py
+python3 setup/playerbots/test_sql.py .setup/playerbots-source /path/to/test-mariadb.sock
 ```
 
-It exercises the actual patched DBC loader, record layout, signed group ID, and localized
-strings. It does not need or include extracted game data.
+The SQL test requires a disposable MariaDB instance accessed through that explicit Unix
+socket. It creates uniquely named test databases, imports the actual native character schema
+and bot seeds, checks translated queries and repeated-import preservation, then removes only
+its own databases. The DBC test covers localized WMO names, model collision dimensions, and
+emote sounds. The configuration test checks isolation, environment overrides, and failed reloads.
 
-The lifecycle hooks found in the reference core also need porting and testing: world startup
-and updates, player/session creation and teardown, packet observation, group/chat handling,
-map updates, navigation, spell events, and bot database initialization. The new Player fields
-are not yet wired into those lifecycles. Merely compiling the module will not spawn bots.
+A successful build and these checks do not establish working in-world behavior. Live testing
+requires the actual world database and extracted game data. Exercise creation/login, autonomous
+travel and quests, combat/healing/pets, loot/mail/auctions, groups and battlegrounds, logout and
+restart persistence, and human takeover of a bot character. Also verify existing native party
+bots and human Skatecraft/Tarnished gameplay. No live gameplay validation has been completed
+in this workspace without those inputs.
 
-Before enabling deployment, require a successful complete server link, isolated database
-migrations, bot login/logout and persistence tests, and live tests of autonomous travel,
-questing, combat, loot and group behavior. Verify that existing native party bots and human
-Skatecraft/Tarnished gameplay continue to work. No live bot behavior has been validated yet.
+## Sources and licensing
+
+`sources.json` pins vmangos, `cmangos/playerbots`, and the CMaNGOS Classic hook reference.
+`core.patch` adapts vmangos; `module.patch` translates the complete upstream module;
+`vmangos.cmake` wires its build and installation. `includes.json` records the initial header
+mapping. Upstream sources, SQL, and copyright notices are retained. Server-side code keeps
+its upstream GPL licensing, separate from the Rust client's license. No game assets are bundled.
