@@ -260,6 +260,67 @@ fn moving_cast_hold_keeps_its_stow_between_plays() {
     assert_eq!(sheath(&app), Some(1), "the stop's Ready play re-draws");
 }
 
+/// Tarnished hands the complete sampled pose back to WoW during casting. The native driver
+/// must select a stationary full cast, then a moving leg gait + cast hold, then full cast again.
+#[test]
+fn tarnished_cast_uses_native_running_legs_without_losing_the_hold() {
+    let mut app = app();
+    app.insert_resource(crate::tarnished::Drive {
+        active: true,
+        ..Default::default()
+    });
+    let unit = app
+        .world_mut()
+        .spawn((
+            caster_model(),
+            AnimationPlayer::default(),
+            AnimationTransitions::new(),
+            AnimDriver::default(),
+            crate::net::SelfPlayer,
+            CastHold {
+                ranged: false,
+                anim_id: 51,
+                spell_id: 20793,
+            },
+            MovementState::default(),
+        ))
+        .id();
+    let playing = |app: &App| {
+        app.world()
+            .entity(unit)
+            .get::<AnimDriver>()
+            .unwrap()
+            .playing()
+    };
+    app.update();
+    assert_eq!(playing(&app), (Some(51), None));
+    app.world_mut().entity_mut(unit).insert(MovementState {
+        speed: 4.2,
+        flags: move_flags::FORWARD,
+        ..Default::default()
+    });
+    app.update();
+    assert_eq!(
+        playing(&app),
+        (Some(5), Some(51)),
+        "Run on legs, cast on torso"
+    );
+    app.update();
+    assert_eq!(
+        playing(&app),
+        (Some(5), Some(51)),
+        "movement does not end the cast hold"
+    );
+    app.world_mut()
+        .entity_mut(unit)
+        .insert(MovementState::default());
+    app.update();
+    assert_eq!(playing(&app), (Some(51), None));
+    app.world_mut().entity_mut(unit).remove::<CastHold>();
+    app.update();
+    assert_ne!(playing(&app).0, Some(51));
+}
+
 /// A fidgeter on real clip assets: Stand's zero-frequency head and max-frequency look-around (the
 /// LCG's first roll, 38, lands on it) and a short ShuffleLeft. Nodes: head, look, shuffle.
 fn spawn_fidgeter(app: &mut App) -> (Entity, Vec<AnimationNodeIndex>) {

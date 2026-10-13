@@ -33,6 +33,8 @@ pub(crate) struct Drive {
     pub(crate) stamina: f32,
     pub(crate) lock: Option<u64>,
     pub(crate) falling: bool,
+    /// This frame's combat input also cuts a completed spell's animation tail.
+    pub(crate) cancel_spell_pose: bool,
     pub(crate) camera: Option<Transform>,
     pub(crate) joints: Vec<benilla_protocol::tarnished::Joint>,
     pub(crate) bind: Vec<benilla_tarnished::SolvedJoint>,
@@ -258,6 +260,7 @@ fn tick(
 ) {
     let (keys, mouse, motion) = input_sources;
     let (host, drive, link) = (&mut *state.0, &mut *state.1, &mut *state.2);
+    drive.cancel_spell_pose = false;
     link.discover(time.elapsed_secs_f64(), &net);
     let (
         self_guid,
@@ -504,6 +507,7 @@ fn tick(
     };
     let combat_action =
         input.light_attack || input.heavy_attack || input.guard || input.dodge || input.jump;
+    drive.cancel_spell_pose = combat_action;
     if casting && combat_action {
         // Fork policy: combat actions interrupt spells; movement alone keeps the 60% casting pace.
         spell_cast.interrupt();

@@ -385,7 +385,7 @@ pub(crate) struct CastHold {
 
 /// The actual WoW release clip selected by a spell kit, retained while that clip plays.
 #[derive(Component)]
-pub(crate) struct SpellUpperBody(pub(crate) u16);
+pub(crate) struct SpellRelease(pub(crate) u16);
 
 /// A hand's fingers close (`HandsClosed`, 15) purely because a weapon occupies its attach point,
 /// not on combat or sheath; a shield or empty hand stays open (`0x60b590`, paperdoll `0x5059a0`).

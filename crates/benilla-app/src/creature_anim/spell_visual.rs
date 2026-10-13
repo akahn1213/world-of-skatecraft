@@ -747,7 +747,7 @@ pub(super) fn route_cast_visuals(
                     if let Some(anim_id) = kit.anim_id {
                         commands
                             .entity(ev.entity)
-                            .try_insert(super::SpellUpperBody(anim_id));
+                            .try_insert(super::SpellRelease(anim_id));
                     }
                     play_kit(
                         ev.entity,

@@ -304,7 +304,9 @@ pub(super) fn finish_combat_cancel(
         });
         feed.0.push(CastBarEdge::Interrupted);
         if let Some(&entity) = self_guid.0.as_ref().and_then(|guid| index.0.get(guid)) {
-            commands.entity(entity).remove::<Casting>();
+            commands
+                .entity(entity)
+                .remove::<(Casting, crate::creature_anim::SpellRelease)>();
             events.write(CastEvent {
                 entity,
                 spell_id: cancel.spell_id,

@@ -52,12 +52,11 @@ pub(super) fn retarget(
         Option<&mut Plan>,
         Option<&crate::creature_anim::AnimDriver>,
         Option<&crate::creature_anim::CastHold>,
-        Option<&crate::creature_anim::SpellUpperBody>,
-        Has<crate::creature_anim::RangedHold>,
+        Option<&crate::creature_anim::SpellRelease>,
     )>,
     mut commands: Commands,
 ) {
-    for (entity, mut rig, local, remote, plan, driver, hold, release, ranged) in &mut units {
+    for (entity, mut rig, local, remote, plan, driver, hold, release) in &mut units {
         let joints = if local && drive.active {
             drive.joints.as_slice()
         } else if let Some(remote) = remote.filter(|remote| remote.displayed_active) {
@@ -94,16 +93,17 @@ pub(super) fn retarget(
                     base == Some(clip.0) || overlay == Some(clip.0)
                 })
             });
-            // The native WoW pose is already sampled. Keep its torso and all descendants while
-            // a spell owns the hands; a new local melee action can cut an instant cast's tail.
-            let preserve_upper =
-                hold.is_some() || ((release_live || ranged) && !(local && drive.action >= 100));
-            if release.is_some() && (!release_live || (local && drive.action >= 100)) {
+            // Fork policy: let the native driver own the complete pose during casting.
+            // It already chooses a full standing cast or WoW gait + cast overlay while moving.
+            // Combat input cuts even an instant release tail, before an ER action leaves its buffer.
+            let cancelled = local && (drive.cancel_spell_pose || drive.action >= 100);
+            let preserve_native = (hold.is_some() || release_live) && !cancelled;
+            if release.is_some() && (!release_live || cancelled) {
                 commands
                     .entity(entity)
-                    .remove::<crate::creature_anim::SpellUpperBody>();
+                    .remove::<crate::creature_anim::SpellRelease>();
             }
-            apply(&mut plan, &mut rig, bind, joints, preserve_upper);
+            apply(&mut plan, &mut rig, bind, joints, preserve_native);
         }
     }
 }
@@ -113,8 +113,12 @@ fn apply(
     rig: &mut RigPose,
     bind: &[SolvedJoint],
     joints: &[Joint],
-    preserve_upper: bool,
+    preserve_native: bool,
 ) {
+    if preserve_native {
+        // Do not lower the pelvis or replace the native walking legs with an ER pose.
+        return;
+    }
     if plan.parents != rig.parents
         || plan.keys != rig.key_bones
         || plan.binds != rig.bind_translations()
@@ -146,17 +150,7 @@ fn apply(
         .max(0.01);
     let scale = height / reference_height;
     let mut skins = vec![None; plan.pivots.len()];
-    let spine = plan
-        .mappings
-        .iter()
-        .find(|mapping| mapping.skate == "SPINE")
-        .map(|mapping| mapping.bone);
     for mapping in &plan.mappings {
-        if preserve_upper
-            && spine.is_some_and(|spine| in_branch(&plan.parents, mapping.bone, spine))
-        {
-            continue;
-        }
         let Some(joint) = posed(mapping.skate) else {
             continue;
         };
@@ -251,21 +245,6 @@ fn apply(
     rig.pose_dirty = true;
 }
 
-fn in_branch(parents: &[i16], mut bone: usize, root: usize) -> bool {
-    loop {
-        if bone == root {
-            return true;
-        }
-        let Some(parent) = usize::try_from(parents[bone])
-            .ok()
-            .filter(|parent| *parent < bone)
-        else {
-            return false;
-        };
-        bone = parent;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,18 +302,18 @@ mod tests {
         assert_eq!(rig.locals[4].rotation, Quat::IDENTITY);
         assert!(rig.pose_dirty);
 
-        // A native spell pose keeps every torso/hand/socket local transform while the ER
-        // crouch still lowers the pelvis. Returning to melee resumes the ER head pose.
+        // A native spell keeps the ENTIRE sampled pose, including pelvis, legs and sockets.
+        // Finishing/cancelling the spell hands every mapped bone back to ER immediately.
         let mut rig = RigPose::new(Entity::PLACEHOLDER, &skeleton);
         rig.locals[1].rotation = Quat::from_rotation_x(0.7);
         rig.locals[3].rotation = Quat::from_rotation_y(0.4);
-        let wow_upper = rig.locals[1..].to_vec();
+        let wow_pose = rig.locals.clone();
         let mut plan = Plan::default();
         apply(&mut plan, &mut rig, &bind, &joints, true);
-        assert!(rig.locals[0].translation.abs_diff_eq(Vec3::Y * 0.3, 0.001));
-        assert_eq!(&rig.locals[1..], wow_upper.as_slice());
+        assert_eq!(rig.locals, wow_pose);
         apply(&mut plan, &mut rig, &bind, &joints, false);
-        assert_ne!(rig.locals[3].rotation, wow_upper[2].rotation);
+        assert_ne!(rig.locals[3].rotation, wow_pose[3].rotation);
+        assert!(rig.locals[0].translation.abs_diff_eq(Vec3::Y * 0.3, 0.001));
     }
 
     #[test]

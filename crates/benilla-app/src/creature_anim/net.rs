@@ -141,7 +141,7 @@ fn on_attacker_state(
                 .is_some_and(|entity| remote_tarnished.contains(*entity));
         if at_contact {
             if let Some(entity) = index.0.get(&s.attacker) {
-                commands.entity(*entity).remove::<super::SpellUpperBody>();
+                commands.entity(*entity).remove::<super::SpellRelease>();
             }
         }
         attacker_state(

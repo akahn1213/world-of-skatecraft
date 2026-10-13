@@ -65,9 +65,11 @@ Casts and channels allow movement at **60% of normal speed** while in Tarnished 
 normal speed returns when casting ends. Movement and turning do not interrupt them, while
 other interruption rules still apply. **Attacking, blocking, rolling/dodging or jumping cancels
 the cast/channel and performs the action.** Queued next-swing modifiers remain queued.
-WoW casting and ranged
-animations own the upper body while ER drives the lower body. A new melee action can cut an
-instant spell's animation tail and stops ranged auto-repeat. Ranged weapons continue to fire
+WoW owns the complete pose during spell casts and release animations: standing uses the full
+WoW cast pose; moving uses WoW walking/running legs beneath its native casting overlay.
+When the spell animation finishes, Tarnished posing resumes. Attacks, blocks, rolls/dodges
+and jumps also cut an instant spell's animation tail immediately. Attacks and blocks stop
+ranged auto-repeat. Ranged weapons continue to fire
 through WoW abilities; R1/R2 use the melee slots or fists. Books/held items provide no off-hand
 weapon. Staves use the two-handed Twinblade moveset; fishing poles fall back to fists.
 
