@@ -51,6 +51,52 @@ It prepares source and first-install SQL; it does not change a running deploymen
 The ordinary `setup/build-server.sh` image is a separate build and does not automatically
 include this opt-in module. Use this `mangosd` for the bot-enabled server.
 
+## Container build for the test server
+
+Build inside the same image used at runtime, rather than copying host-built binaries into
+an image with different MySQL/OpenSSL/glibc libraries:
+
+```bash
+python3 setup/playerbots/build_image.py --tag world-of-skatecraft/vmangos-playerbots:runtime-fixes
+```
+
+The default base is a pinned digest of the Ubuntu 26.04 vmangos-deploy image. To reuse your
+existing server image instead, pass `--base-image IMAGE`. Both build and runtime stages use
+that same image. Build dependencies are installed as root inside the build stage. `--jobs 4`
+controls compilation parallelism; optional `--core-cache`/`--bots-cache` reuse pinned clones.
+The script creates source-only build context and does not modify Compose, start containers,
+or import/reset any database. Use the resulting image in your existing **test** Compose file
+with its copied databases and existing extracted data. Preserve the original deployment.
+
+The image retains vmangos-deploy's wrappers and includes unstripped server binaries, gdb,
+configuration templates under `/opt/vmangos/config`, and bot SQL under
+`/opt/vmangos/share/vmangos/playerbots`. Existing bind mounts can hide the templates, so retain
+your already-created configuration files. Existing bot tables do not need reinstallation.
+The main server command remains:
+
+```bash
+/opt/vmangos/bin/mangosd -c /opt/vmangos/config/mangosd.conf
+```
+
+The image records source pins, patch hashes, compiler version, and binary hashes under
+`/opt/vmangos/share/playerbots`. Verify the actual packaged files, rather than relying on a tag:
+
+```bash
+docker run --rm --entrypoint sh world-of-skatecraft/vmangos-playerbots:runtime-fixes \
+  -c 'cd /opt/vmangos && sha256sum -c share/playerbots/binaries.sha256 && cat share/playerbots/provenance.json'
+```
+
+If startup fails again, stop the test service's restart loop and run the same image and mounts
+under gdb. This captures function names and source line numbers without host core-dump setup:
+
+```bash
+docker compose -f "$TEST/compose.yaml" stop mangosd
+docker compose -f "$TEST/compose.yaml" run --rm --no-deps --entrypoint gdb mangosd \
+  --batch -ex 'set pagination off' -ex run -ex 'thread apply all bt' \
+  --args /opt/vmangos/bin/mangosd -c /opt/vmangos/config/mangosd.conf \
+  > playerbots-gdb.log 2>&1
+```
+
 ## Database and configuration
 
 Use a separate server instance and copies of your existing vmangos databases for the first
@@ -73,8 +119,10 @@ tables cause installation to stop, preserving their contents. Do not use the SQL
 the upstream SQL directory: it contains reset statements and schemas for other expansions.
 Installed copies of these two scripts are under `share/vmangos/playerbots`.
 
-Copy `aiplayerbot.conf.dist` to `aiplayerbot.conf` in the configured `CONF_DIR`, alongside your
-`mangosd.conf`. Set `AiPlayerbot.Enabled = 1`. Configure `mangosd.conf` with the test database
+Copy `aiplayerbot.conf.dist` to `aiplayerbot.conf` alongside the main configuration passed to
+`mangosd -c`. Bot configuration lookup uses that directory at runtime, not the build machine's
+`CONF_DIR`. Set `PLAYERBOTS_CONFIG_DIR` to override it for both bot configuration files. Missing
+configuration errors include the resolved absolute path. Set `AiPlayerbot.Enabled = 1`. Configure `mangosd.conf` with the test database
 connections, realm, and `DataDir` pointing to your extracted vmangos data.
 
 For a small initial population, adjust these existing settings in the copied bot config:
@@ -111,6 +159,27 @@ If `AiPlayerbot.CommandServerPort` is enabled, the command service listens on **
 The upstream line protocol has no authentication; remote administrators can use an SSH port
 forward. Connections are nonblocking and commands execute on the world thread.
 
+## Runtime fixes from the first test deployment
+
+- AH proposition cleanup uses native `mail.receiver_guid`; pet queries use `owner_guid`.
+- A missing auction configuration leaves the service disabled with initialized settings.
+  Both bot configuration files resolve beside the selected `mangosd.conf`, with an explicit
+  directory override available.
+- Teleport caches validate map, level and coordinates, clear previous in-memory contents,
+  check parallel indexes and use numeric zone keys. Area lookup uses the native terrain
+  loader and tolerates missing entries and cyclic zone parents. Startup logs identify each
+  cache enhancement phase.
+- Travel, taxi and auction logs pass native string members as character pointers,
+  avoiding undefined behavior in variadic logging. The format regression check compiles
+  every bot translation unit against the configured native headers with format errors fatal.
+- The build links the platform dynamic-loader library through the existing CMake signature.
+  The container recipe builds against its runtime libraries and retains debugging symbols.
+- The Rust animation-loader transformation accepts Windows CRLF checkouts and fails early
+  if the pinned source no longer matches its required transformations.
+
+The report's riding-skill, cooldown and guild-leader warnings are not established crash
+causes. Native validation for those records remains in effect.
+
 ## Validation
 
 Asset-free checks use the configured build's real compiler and native DBC loader:
@@ -118,24 +187,37 @@ Asset-free checks use the configured build's real compiler and native DBC loader
 ```bash
 python3 setup/playerbots/test_dbc.py .setup/playerbots-build
 python3 setup/playerbots/test_config.py .setup/playerbots-build
+python3 setup/playerbots/test_formats.py .setup/playerbots-build
 PLAYERBOTS_PREPARED_SOURCE="$PWD/.setup/playerbots-source" \
 PLAYERBOTS_UPSTREAM_SOURCE=/path/to/pinned/playerbots/clone \
   python3 -m unittest discover -s setup/playerbots -p test_prepare.py
 python3 setup/playerbots/test_sql.py .setup/playerbots-source /path/to/test-mariadb.sock
+python3 setup/playerbots/test_runtime.py .setup/playerbots-build /path/to/test-mariadb.sock
 ```
 
 The SQL test requires a disposable MariaDB instance accessed through that explicit Unix
 socket. It creates uniquely named test databases, imports the actual native character schema
 and bot seeds, checks translated queries and repeated-import preservation, then removes only
 its own databases. The DBC test covers localized WMO names, model collision dimensions, and
-emote sounds. The configuration test checks isolation, environment overrides, and failed reloads.
+emote sounds. The configuration test checks relocation, isolation, environment overrides, and failed reloads.
+The SQL test preprocesses the vanilla source and validates active SQL literals against the native
+character schema. The linked runtime test exercises actual mail cleanup, missing auction config,
+area lookup, invalid cache rows, cache alignment and repeated cache initialization in separate
+processes sharing a disposable database. It requires permission to create an ephemeral local
+database user as well as the test databases. These fixtures contain no extracted game assets. Add `--sanitize` to `test_runtime.py`
+to instrument the affected bot translation units with ASan/UBSan. The rest of the core
+remains uninstrumented. Alignment checks are excluded because the pinned native core
+uses packed database structures, including string members; leak checking is excluded
+because the fixture does not perform full service shutdown.
 
 A successful build and these checks do not establish working in-world behavior. Live testing
 requires the actual world database and extracted game data. Exercise creation/login, autonomous
 travel and quests, combat/healing/pets, loot/mail/auctions, groups and battlegrounds, logout and
 restart persistence, and human takeover of a bot character. Also verify existing native party
-bots and human Skatecraft/Tarnished gameplay. No live gameplay validation has been completed
-in this workspace without those inputs.
+bots and human Skatecraft/Tarnished gameplay. The reported production-data startup segfault has not been reproduced in this workspace;
+synthetic cache tests cannot establish its exact cause. The cache now uses native terrain
+loading, numeric zone keys and validated positions, with phase logs for any further investigation.
+A repeated in-world startup/shutdown test remains required before treating this as production-ready.
 
 ## Sources and licensing
 

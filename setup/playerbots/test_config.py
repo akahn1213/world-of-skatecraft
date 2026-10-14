@@ -29,11 +29,20 @@ def main(build):
         source = root / "test.cpp"
         source.write_text(r'''
 #include "playerbot/VMangosBotConfig.h"
+#include "playerbot/VMangosConfigPath.h"
+#include <cstdlib>
 #include <cassert>
 #include <fstream>
 int main(int argc, char** argv)
 {
     assert(argc == 3);
+    unsetenv("PLAYERBOTS_CONFIG_DIR");
+    auto directory = std::filesystem::path(argv[1]).parent_path();
+    assert(ResolveBotConfigPath((directory / "mangosd.conf").string(), "aiplayerbot.conf") == (directory / "aiplayerbot.conf").string());
+    setenv("PLAYERBOTS_CONFIG_DIR", "/relocated/container/config", 1);
+    assert(ResolveBotConfigPath("/old/build/etc/mangosd.conf", "aiplayerbot.conf") == "/relocated/container/config/aiplayerbot.conf");
+    assert(ResolveBotConfigPath("/old/build/etc/mangosd.conf", "playerbots-ahbot.conf") == "/relocated/container/config/playerbots-ahbot.conf");
+    unsetenv("PLAYERBOTS_CONFIG_DIR");
     BotConfig ai, auction;
     assert(ai.SetSource(argv[1], "PLAYERBOTS_TEST_"));
     assert(auction.SetSource(argv[2], "AUCTION_TEST_"));
@@ -54,7 +63,7 @@ int main(int argc, char** argv)
         subprocess.run([args[0], *flags, "-O0", str(source), command["file"], "-o", str(executable), "-pthread"], cwd=command["directory"], check=True)
         env = dict(os.environ, PLAYERBOTS_TEST_AiPlayerbot_Count="7")
         subprocess.run([str(executable), str(root / "ai.conf"), str(root / "auction.conf")], env=env, check=True)
-    print("Independent configuration, environment overrides, and atomic failed reload passed")
+    print("Configuration relocation, independent settings, environment overrides, and atomic failed reload passed")
 
 
 if __name__ == "__main__":

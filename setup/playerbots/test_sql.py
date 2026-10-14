@@ -11,6 +11,7 @@ import tempfile
 import uuid
 
 from prepare_sql import prepare_sql
+from sql_queries import character_queries
 
 
 def main():
@@ -40,6 +41,15 @@ def main():
             char_sql = (output / "characters.sql").read_text()
             sql(char_sql, characters)
             sql((output / "world.sql").read_text(), world)
+            checked = 0
+            for source, query in character_queries(args.source / "src/game/AutonomousBots"):
+                # Explain verifies the actual referenced tables/columns without
+                # executing deletes, updates or inserts from the runtime source.
+                result = sql("EXPLAIN " + query, characters, check=False)
+                assert result.returncode == 0, f"{source}: {query}\n{result.stderr}"
+                checked += 1
+            assert checked >= 75, checked
+            print(f"Validated {checked} active vanilla character-database SQL literals")
             # Native renamed fields exercised by login, guild, and auction code.
             sql("SELECT account,guid,race,class,level,online,played_time_total,map,position_x,position_y,position_z,orientation FROM characters; SELECT guild_id,guid FROM guild_member; SELECT guild_id,leader_guid FROM guild; UPDATE auction SET buyer_guid=0,last_bid=0 WHERE id=0;", characters)
             assert int(sql("SELECT COUNT(*) FROM ai_playerbot_names", characters).stdout) > 1000

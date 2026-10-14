@@ -30,3 +30,7 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/aiplayerbot.conf.dist
 
 install(FILES ${CMAKE_SOURCE_DIR}/sql/playerbots/characters.sql
   ${CMAKE_SOURCE_DIR}/sql/playerbots/world.sql DESTINATION share/vmangos/playerbots)
+
+# Boost stacktrace uses dladdr on glibc versions before 2.34 as well.
+# game uses CMake's plain target_link_libraries signature.
+target_link_libraries(game ${CMAKE_DL_LIBS})
