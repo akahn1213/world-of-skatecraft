@@ -68,7 +68,7 @@ The script creates source-only build context and does not modify Compose, start 
 or import/reset any database. Use the resulting image in your existing **test** Compose file
 with its copied databases and existing extracted data. Preserve the original deployment.
 
-The image retains vmangos-deploy's wrappers and includes unstripped server binaries, gdb,
+The image retains vmangos-deploy's wrappers and uses `RelWithDebInfo` and includes unstripped server binaries, gdb,
 configuration templates under `/opt/vmangos/config`, and bot SQL under
 `/opt/vmangos/share/vmangos/playerbots`. Existing bind mounts can hide the templates, so retain
 your already-created configuration files. Existing bot tables do not need reinstallation.
@@ -78,6 +78,8 @@ The main server command remains:
 /opt/vmangos/bin/mangosd -c /opt/vmangos/config/mangosd.conf
 ```
 
+The build verifies DWARF debug sections and GDB source-line lookup for the event loader.
+`DEBUG_SYMBOLS=ON` alone is insufficient with the pinned core’s Release configuration.
 The image records source pins, patch hashes, compiler version, and binary hashes under
 `/opt/vmangos/share/playerbots`. Verify the actual packaged files, rather than relying on a tag:
 
@@ -92,7 +94,7 @@ under gdb. This captures function names and source line numbers without host cor
 ```bash
 docker compose -f "$TEST/compose.yaml" stop mangosd
 docker compose -f "$TEST/compose.yaml" run --rm --no-deps --entrypoint gdb mangosd \
-  --batch -ex 'set pagination off' -ex run -ex 'thread apply all bt' \
+  --batch -ex 'set pagination off' -ex run -ex 'thread apply all bt full' \
   --args /opt/vmangos/bin/mangosd -c /opt/vmangos/config/mangosd.conf \
   > playerbots-gdb.log 2>&1
 ```
@@ -159,7 +161,24 @@ If `AiPlayerbot.CommandServerPort` is enabled, the command service listens on **
 The upstream line protocol has no authentication; remote administrators can use an SSH port
 forward. Connections are nonblocking and commands execute on the world thread.
 
-## Runtime fixes from the first test deployment
+## Native compatibility contracts
+
+- vmangos `Field::GetString()` returns a nullable borrowed pointer. The module uses
+  `GetCppString()` for SQL text so NULL becomes an empty owned string and values survive
+  advancing or destroying the query result. In particular, bot events legitimately store
+  NULL payloads; their enabled-manager restart path must accept these existing rows.
+  This fix requires a server rebuild, not a table reset or data migration.
+- SQL formatting does not escape values. Event names/payloads, presets, custom strategies,
+  account names, help text and auction categories use the destination database’s native
+  escaping. In-memory keys and payloads retain their original contents.
+- Channel membership uses the native `Channel` API. No unrelated CMaNGOS-layout class is
+  cast over a vmangos object. Navigation reference widths come from native Detour headers.
+- GUID and packet fields use vmangos types and native packet decoders. Truncated typed
+  bot packets are rejected at the adapter boundary instead of escaping into the world loop.
+- Every GNU/Clang bot build treats printf-format mismatches as errors, including SQL and
+  logging calls. This checks actual native member types rather than assuming CMaNGOS types.
+
+## Other deployment fixes
 
 - AH proposition cleanup uses native `mail.receiver_guid`; pet queries use `owner_guid`.
 - A missing auction configuration leaves the service disabled with initialized settings.
@@ -187,6 +206,8 @@ Asset-free checks use the configured build's real compiler and native DBC loader
 ```bash
 python3 setup/playerbots/test_dbc.py .setup/playerbots-build
 python3 setup/playerbots/test_config.py .setup/playerbots-build
+python3 setup/playerbots/test_contracts.py .setup/playerbots-source
+# Optional standalone format audit; normal bot builds already enforce format errors:
 python3 setup/playerbots/test_formats.py .setup/playerbots-build
 PLAYERBOTS_PREPARED_SOURCE="$PWD/.setup/playerbots-source" \
 PLAYERBOTS_UPSTREAM_SOURCE=/path/to/pinned/playerbots/clone \
@@ -196,14 +217,21 @@ python3 setup/playerbots/test_runtime.py .setup/playerbots-build /path/to/test-m
 ```
 
 The SQL test requires a disposable MariaDB instance accessed through that explicit Unix
-socket. It creates uniquely named test databases, imports the actual native character schema
+socket. It creates uniquely named test databases, imports the actual native character and login schemas
 and bot seeds, checks translated queries and repeated-import preservation, then removes only
 its own databases. The DBC test covers localized WMO names, model collision dimensions, and
 emote sounds. The configuration test checks relocation, isolation, environment overrides, and failed reloads.
 The SQL test preprocesses the vanilla source and validates active SQL literals against the native
-character schema. The linked runtime test exercises actual mail cleanup, missing auction config,
-area lookup, invalid cache rows, cache alignment and repeated cache initialization in separate
-processes sharing a disposable database. It requires permission to create an ephemeral local
+character and login schemas, plus bot-owned world tables from the installed seeds.
+The full native world database is not bundled and is not synthesized by that test.
+The source contract check rejects borrowed SQL string reads,
+foreign object-layout casts and module overrides of the native Detour reference ABI.
+The linked runtime test starts an enabled manager, saves NULL-payload events, and restarts
+twice against the same database. It also checks nullable translations, owned text after
+result destruction, signed/unsigned integer limits, quoted/Unicode persistence, native GUID
+serialization and truncated packet rejection, locale indexes and channel membership.
+Existing mail cleanup, missing auction config, area lookup, invalid cache rows, cache alignment
+and repeated cache initialization tests run in those same processes. It requires permission to create an ephemeral local
 database user as well as the test databases. These fixtures contain no extracted game assets. Add `--sanitize` to `test_runtime.py`
 to instrument the affected bot translation units with ASan/UBSan. The rest of the core
 remains uninstrumented. Alignment checks are excluded because the pinned native core
@@ -214,9 +242,9 @@ A successful build and these checks do not establish working in-world behavior. 
 requires the actual world database and extracted game data. Exercise creation/login, autonomous
 travel and quests, combat/healing/pets, loot/mail/auctions, groups and battlegrounds, logout and
 restart persistence, and human takeover of a bot character. Also verify existing native party
-bots and human Skatecraft/Tarnished gameplay. The reported production-data startup segfault has not been reproduced in this workspace;
-synthetic cache tests cannot establish its exact cause. The cache now uses native terrain
-loading, numeric zone keys and validated positions, with phase logs for any further investigation.
+bots and human Skatecraft/Tarnished gameplay. The NULL event-payload crash in the supplied `GetEventValue` backtrace was reproduced by
+the enabled-manager restart fixture against the unfixed code. This reproduces that failure
+without the production database; it does not reproduce the entire production deployment.
 A repeated in-world startup/shutdown test remains required before treating this as production-ready.
 
 ## Sources and licensing

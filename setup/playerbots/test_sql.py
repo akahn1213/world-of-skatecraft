@@ -5,13 +5,14 @@ Never connects over TCP or touches an existing database. Requires a test account
  to create databases. Usage: test_sql.py PREPARED_SOURCE SOCKET [--client mariadb]
 """
 import argparse
+import re
 from pathlib import Path
 import subprocess
 import tempfile
 import uuid
 
 from prepare_sql import prepare_sql
-from sql_queries import character_queries
+from sql_queries import database_queries
 
 
 def main():
@@ -27,7 +28,7 @@ def main():
         return subprocess.run(client + ([database] if database else []), input=text, text=True, capture_output=True, check=check)
 
     prefix = "playerbots_test_" + uuid.uuid4().hex[:12]
-    databases = [prefix + "_characters", prefix + "_world"]
+    databases = [prefix + "_characters", prefix + "_world", prefix + "_logon"]
     created = []
     try:
         with tempfile.TemporaryDirectory(prefix="playerbots-sql-") as temp:
@@ -36,20 +37,42 @@ def main():
             for name in databases:
                 sql(f"CREATE DATABASE `{name}`")
                 created.append(name)
-            characters, world = databases
+            characters, world, logon = databases
             sql((args.source / "sql/characters.sql").read_text(), characters)
+            sql((args.source / "sql/logon.sql").read_text(), logon)
             char_sql = (output / "characters.sql").read_text()
             sql(char_sql, characters)
             sql((output / "world.sql").read_text(), world)
             checked = 0
-            for source, query in character_queries(args.source / "src/game/AutonomousBots"):
+            for source, query in database_queries(args.source / "src/game/AutonomousBots"):
                 # Explain verifies the actual referenced tables/columns without
                 # executing deletes, updates or inserts from the runtime source.
                 result = sql("EXPLAIN " + query, characters, check=False)
                 assert result.returncode == 0, f"{source}: {query}\n{result.stderr}"
                 checked += 1
+            login_checked = 0
+            for source, query in database_queries(args.source / "src/game/AutonomousBots", "LoginDatabase"):
+                result = sql("EXPLAIN " + query, logon, check=False)
+                assert result.returncode == 0, f"{source}: {query}\n{result.stderr}"
+                login_checked += 1
+            assert login_checked >= 10, login_checked
+            print(f"Validated {login_checked} active vanilla login-database SQL literals")
             assert checked >= 75, checked
             print(f"Validated {checked} active vanilla character-database SQL literals")
+            world_checked = 0
+            for source, query in database_queries(args.source / "src/game/AutonomousBots", "WorldDatabase"):
+                # The repository supplies bot world tables, not the full game-world
+                # database. Validate only queries whose tables are all in those seeds.
+                tables = re.findall(r"\b(?:FROM|JOIN|INTO|UPDATE)\s+`?(\w+)", query, re.I)
+                if not tables or not all(table.startswith("ai_playerbot_") for table in tables):
+                    continue
+                if not re.match(r"\s*(SELECT|INSERT|UPDATE|DELETE)\b", query, re.I):
+                    continue
+                result = sql("EXPLAIN " + query, world, check=False)
+                assert result.returncode == 0, f"{source}: {query}\n{result.stderr}"
+                world_checked += 1
+            assert world_checked >= 15, world_checked
+            print(f"Validated {world_checked} bot-world SQL literals against their installed schemas")
             # Native renamed fields exercised by login, guild, and auction code.
             sql("SELECT account,guid,race,class,level,online,played_time_total,map,position_x,position_y,position_z,orientation FROM characters; SELECT guild_id,guid FROM guild_member; SELECT guild_id,leader_guid FROM guild; UPDATE auction SET buyer_guid=0,last_bid=0 WHERE id=0;", characters)
             assert int(sql("SELECT COUNT(*) FROM ai_playerbot_names", characters).stdout) > 1000

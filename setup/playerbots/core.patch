@@ -106,6 +106,18 @@ index 782d53c..524a03b 100644
 +if(BUILD_PLAYERBOTS)
 +  include(AutonomousBots/vmangos.cmake)
 +endif()
+diff --git a/src/game/Chat/Channel.h b/src/game/Chat/Channel.h
+index 7f0c9c1..8af5293 100644
+--- a/src/game/Chat/Channel.h
++++ b/src/game/Chat/Channel.h
+@@ -167,6 +167,7 @@ class Channel
+         void SetPassword(std::string const& npassword) { m_password = npassword; }
+         void SetAnnounce(bool nannounce) { m_announce = nannounce; }
+         uint32 GetNumPlayers() const { return m_players.size(); }
++        bool HasMember(ObjectGuid guid) const { return IsOn(guid); }
+         uint8 GetFlags() const { return m_flags; }
+         bool HasFlag(uint8 flag) { return m_flags & flag; }
+         void SetSecurityLevel(uint8 sec) { m_securityLevel = sec; }
 diff --git a/src/game/Chat/ChannelMgr.h b/src/game/Chat/ChannelMgr.h
 index 5d61d14..9b8c19d 100644
 --- a/src/game/Chat/ChannelMgr.h

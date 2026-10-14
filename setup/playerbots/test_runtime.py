@@ -48,6 +48,7 @@ def compile_fixture(build, output, sanitize=False):
         # Instrument the affected production translation units, not a mock of them.
         # The remaining native core is linked from the normal build.
         for relative in ['playerbot/WorldPosition.cpp', 'playerbot/RandomPlayerbotMgr.cpp',
+                         'playerbot/PlayerbotDbStore.cpp', 'playerbot/PlayerbotTextMgr.cpp',
                          'ahbot/AhBot.cpp', 'ahbot/AhBotConfig.cpp']:
             obj = output.parent / (Path(relative).stem + '.o')
             subprocess.run([*common, '-include', str(module / 'botpch.h'), '-c',
@@ -102,7 +103,7 @@ def main():
             for mode in ['cold', 'warm', 'warm']:
                 subprocess.run([str(executable), world, chars, tag, mode], cwd=temp,
                                env=env, timeout=90, check=True)
-            print('Linked runtime tests passed: cold start, two restarts, cache bounds, area names, missing config, mail cleanup')
+            print('Linked runtime tests passed: enabled cold start and two restarts, nullable/owned text, integer and GUID boundaries, native packet decoding, channel membership, persistence, caches, mail cleanup')
         finally:
             for db in created:
                 sql(f'DROP DATABASE `{db}`')

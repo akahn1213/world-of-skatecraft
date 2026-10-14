@@ -8,6 +8,11 @@ target_include_directories(autonomous_playerbots PRIVATE
 target_link_libraries(autonomous_playerbots PRIVATE shared Detour g3dlite)
 target_compile_definitions(autonomous_playerbots PRIVATE CMANGOS VMANGOS MANGOSBOT_ZERO ENABLE_PLAYERBOTS)
 set_property(TARGET autonomous_playerbots PROPERTY CXX_STANDARD 20)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  # Native core warning suppressions must not hide bot printf type/format errors.
+  target_compile_options(autonomous_playerbots PRIVATE
+    -Werror=format -Werror=format-security -Wno-format-zero-length)
+endif()
 option(PLAYERBOTS_USE_PCH "Precompile the bot module's shared compatibility headers" ON)
 if(PLAYERBOTS_USE_PCH)
   target_precompile_headers(autonomous_playerbots PRIVATE
