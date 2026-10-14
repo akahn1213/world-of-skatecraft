@@ -5,6 +5,8 @@
 //! the compiler fail on a missing module, say plainly what to do — exactly as the upstream
 //! sandbox's own `build.rs` does.
 
+mod build_support;
+
 use std::path::PathBuf;
 
 fn main() {
@@ -112,22 +114,13 @@ impl Player {
     // Upstream is a Bevy sandbox binary, not a Cargo library. Keep its pure animation
     // selection and layering code verbatim apart from the host's types/clock plumbing.
     let vendor = source.parent().unwrap();
+    println!(
+        "cargo:rerun-if-changed={}",
+        vendor.join("anim.rs").display()
+    );
     let anim =
         std::fs::read_to_string(vendor.join("anim.rs")).expect("read pinned animation loader");
-    let anim = anim
-        .replace("//!", "//")
-        .replace("use bevy::prelude::*;", "use glam::Vec3;")
-        .replace("#[derive(Resource)]", "")
-        .replace("joints: Vec<String>", "pub joints: Vec<String>")
-        .replace("oriented: Vec<String>", "pub oriented: Vec<String>")
-        .replace("pub fn load() -> io::Result<Self> {\n        let data = fs::read(PATH)?;", "pub fn load(path: &std::path::Path) -> io::Result<Self> {\n        let data = fs::read(path)?;")
-        .replace("let mut c = Cursor { data: &data, at: 0 };", "Self::from_bytes(&data)\n    }\n    pub fn from_bytes(data: &[u8]) -> io::Result<Self> {\n        let mut c = Cursor { data, at: 0 };")
-        .replace("let joints = (0..joint_count)", "if joint_count == 0 || joint_count > 96 || oriented_count > 96 || clip_count > 10000 {\nreturn Err(io::Error::new(io::ErrorKind::InvalidData, \"invalid animation counts\"));\n}\nlet joints = (0..joint_count)")
-        .replace("let frames = c.u32()? as usize;", "let frames = c.u32()? as usize;\nif frames == 0 || frames > 36000 || !blend.is_finite() || blend < 0.0 {\nreturn Err(io::Error::new(io::ErrorKind::InvalidData, \"invalid animation clip\"));\n}")
-        .replace(".collect();\n            clips.insert", ".collect::<Vec<_>>();\nif data.iter().any(|v| !v.is_finite()) {\nreturn Err(io::Error::new(io::ErrorKind::InvalidData, \"nonfinite animation pose\"));\n}\n            clips.insert")
-        .replace("raw.chunks_exact(4)", "raw.as_chunks::<4>().0.iter()")
-        .replace("f32::from_le_bytes(b.try_into().unwrap())", "f32::from_le_bytes(*b)")
-        .replace("Ok(Self { joints, oriented, stride, clips })", "if c.at != data.len() { return Err(io::Error::new(io::ErrorKind::InvalidData, \"trailing animation bytes\")); }\nOk(Self { joints, oriented, stride, clips })");
+    let anim = build_support::adapt_anim(&anim);
     std::fs::write(out.join("anim.rs"), anim).expect("write animation loader");
     let rig =
         std::fs::read_to_string(vendor.join("rig.rs")).expect("read pinned animation mechanism");

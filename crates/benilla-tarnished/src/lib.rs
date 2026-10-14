@@ -15,6 +15,10 @@
 //! unavailable to a host with a precise message ([`unavailable`]), and an ordinary build touches
 //! no game-derived data.
 
+#[cfg(test)]
+#[path = "../build_support.rs"]
+mod build_support;
+
 pub mod attack;
 pub mod defence;
 pub mod impact;
