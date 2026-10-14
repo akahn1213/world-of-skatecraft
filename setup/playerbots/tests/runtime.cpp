@@ -14,7 +14,7 @@
 #include <limits>
 #include <cassert>
 #include <iostream>
-#include <type_traits>
+#include "database_contracts.h"
 DatabaseType WorldDatabase, CharacterDatabase, LoginDatabase, LogsDatabase;
 uint32 realmID = 1;
 std::string realmName = "fixture";
@@ -22,22 +22,8 @@ char const* g_mainLogFileName = "fixture.log";
 
 static void CheckNativeContracts()
 {
-  static_assert(sizeof(uint8) == 1 && sizeof(uint16) == 2 && sizeof(uint32) == 4 && sizeof(uint64) == 8);
+  CheckNativeDatabaseContracts();
   static_assert(sizeof(dtPolyRef) == 8 && sizeof(dtTileRef) == 8, "Use the pinned native Detour ABI");
-  static_assert(std::is_same_v<decltype(std::declval<Field>().GetCppString()), std::string>);
-  auto rows = CharacterDatabase.Query("SELECT NULL, '', 'first', 255, 65535, 4294967295, 18446744073709551615, -2147483648, -9223372036854775808 UNION ALL SELECT NULL, '', 'second', 0, 0, 0, 0, 0, 0");
-  assert(rows && rows->GetRowCount() == 2);
-  Field* fields = rows->Fetch();
-  assert(fields[0].IsNULL() && fields[0].GetString() == nullptr);
-  assert(fields[0].GetCppString().empty() && fields[0].GetUInt64() == 0 && !fields[0].GetBool());
-  assert(!fields[1].IsNULL() && fields[1].GetCppString().empty());
-  assert(fields[3].GetUInt8() == UINT8_MAX && fields[4].GetUInt16() == UINT16_MAX);
-  assert(fields[5].GetUInt32() == UINT32_MAX && fields[6].GetUInt64() == UINT64_MAX);
-  assert(fields[7].GetInt32() == INT32_MIN && fields[8].GetInt64() == INT64_MIN);
-  std::string owned = fields[2].GetCppString();
-  assert(rows->NextRow() && rows->Fetch()[2].GetCppString() == "second");
-  rows.reset();
-  assert(owned == "first"); // No MYSQL_ROW pointers survive row/result destruction.
 
   ObjectGuid guid(HIGHGUID_UNIT, uint32(12345), uint32(0x00abcdef));
   WorldPacket attack(CMSG_ATTACKSWING);

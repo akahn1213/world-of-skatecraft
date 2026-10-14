@@ -181,6 +181,8 @@ forward. Connections are nonblocking and commands execute on the world thread.
 ## Other deployment fixes
 
 - AH proposition cleanup uses native `mail.receiver_guid`; pet queries use `owner_guid`.
+  All login-selection query variants use `characters.played_time_total` and remain explicit
+  SQL literals so the schema test covers their conditions.
 - A missing auction configuration leaves the service disabled with initialized settings.
   Both bot configuration files resolve beside the selected `mangosd.conf`, with an explicit
   directory override available.
@@ -213,6 +215,7 @@ PLAYERBOTS_PREPARED_SOURCE="$PWD/.setup/playerbots-source" \
 PLAYERBOTS_UPSTREAM_SOURCE=/path/to/pinned/playerbots/clone \
   python3 -m unittest discover -s setup/playerbots -p test_prepare.py
 python3 setup/playerbots/test_sql.py .setup/playerbots-source /path/to/test-mariadb.sock
+python3 setup/playerbots/test_database.py .setup/playerbots-build /path/to/test-mariadb.sock
 python3 setup/playerbots/test_runtime.py .setup/playerbots-build /path/to/test-mariadb.sock
 ```
 
@@ -231,8 +234,12 @@ twice against the same database. It also checks nullable translations, owned tex
 result destruction, signed/unsigned integer limits, quoted/Unicode persistence, native GUID
 serialization and truncated packet rejection, locale indexes and channel membership.
 Existing mail cleanup, missing auction config, area lookup, invalid cache rows, cache alignment
-and repeated cache initialization tests run in those same processes. It requires permission to create an ephemeral local
-database user as well as the test databases. These fixtures contain no extracted game assets. Add `--sanitize` to `test_runtime.py`
+and repeated cache initialization tests run in those same processes. These tests require
+CREATE USER and CREATE DATABASE privileges on the disposable database instance. They contain
+no extracted game assets. `test_database.py` runs the same native NULL/ownership/integer-boundary
+checks, SQL escaping and prepared-statement bindings against the configured client library.
+It needs only the `shared`, `framework` and `g3dlite` build targets. This permits a separate
+MySQL/MariaDB library check without rebuilding the whole world server. Add `--sanitize` to `test_runtime.py`
 to instrument the affected bot translation units with ASan/UBSan. The rest of the core
 remains uninstrumented. Alignment checks are excluded because the pinned native core
 uses packed database structures, including string members; leak checking is excluded
