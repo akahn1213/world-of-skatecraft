@@ -1,0 +1,525 @@
+--- /dev/null
++++ b/playerbot/LLMConversation.cpp
+@@ -0,0 +1,187 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++#include "playerbot/LLMConversation.h"
++#include "playerbot/LLMConversationText.h"
++#include "playerbot/VMangosBotConfig.h"
++#include "playerbot/PlayerbotAI.h"
++#include "playerbot/PlayerbotAIConfig.h"
++#include "playerbot/TravelMgr.h"
++#include "playerbot/strategy/AiObjectContext.h"
++#include "QuestDef.h"
++#include "Group.h"
++#include "Bag.h"
++#include <sstream>
++#include <ctime>
++
++namespace ai::conversation
++{
++namespace
++{
++    bool enabled = false, historyEnabled = false, diagnostics = false;
++    unsigned budget = 2048, questCount = 3, historyBytes = 4096, historyCount = 32, historyAge = 1800;
++    std::vector<std::string> fields;
++    std::map<uint64_t, Journal> journals; // World thread; erased on logout/reload.
++    unsigned Bounded(BotConfig const& config, char const* key, int fallback, int maximum)
++    {
++        int raw = config.GetIntDefault(key, fallback);
++        int value = std::clamp(raw, 0, maximum);
++        if (raw != value) sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "%s clamped to %d", key, value);
++        return value;
++    }
++    std::string Scope(Player* bot, uint32_t type, uint64_t peer, std::string const& channel)
++    {
++        std::string key = std::to_string(type) + ":";
++        if (type == CHAT_MSG_WHISPER) return key + std::to_string(peer);
++        if (type == CHAT_MSG_GUILD || type == CHAT_MSG_OFFICER) return key + std::to_string(bot->GetGuildId());
++        if (type == CHAT_MSG_PARTY || type == CHAT_MSG_RAID || type == CHAT_MSG_RAID_LEADER || type == CHAT_MSG_RAID_WARNING || type == CHAT_MSG_BATTLEGROUND || type == CHAT_MSG_BATTLEGROUND_LEADER)
++        {
++            Group* group = type == CHAT_MSG_PARTY && bot->GetOriginalGroup() ? bot->GetOriginalGroup() : bot->GetGroup();
++            return key + (group ? std::to_string(group->GetId()) + ":" + std::to_string(group->GetMemberGroup(bot->GetObjectGuid())) : "none");
++        }
++        return key + std::to_string(bot->GetMapId()) + ":" + std::to_string(bot->GetInstanceId()) + ":" + Clip(OneLine(channel), 128);
++    }
++    std::string Activity(Player* bot)
++    {
++        auto* ai = bot->GetPlayerbotAI();
++        std::string result = !bot->IsAlive() ? "dead" : bot->IsInCombat() ? "in combat" : "out of combat";
++        if (ai && ai->GetMaster() && ai->HasStrategy("follow", BotState::BOT_STATE_NON_COMBAT))
++            result += "; follow strategy enabled, leader=" + std::string(ai->GetMaster()->GetName()) + "; personal travel plans may be overridden";
++        return result;
++    }
++    std::string Travel(Player* bot)
++    {
++        auto* ai = bot->GetPlayerbotAI();
++        if (!ai || !ai->GetAiObjectContext()) return "unavailable";
++        auto* target = ai->GetAiObjectContext()->GetValue<TravelTarget*>("travel target")->Get();
++        if (!target || !target->GetDestination()) return "no selected destination";
++        // Do not call GetTravelState/IsActive: they can evaluate planner conditions.
++        auto* destination = target->GetDestination();
++        auto* quest = dynamic_cast<QuestTravelDestination*>(destination);
++        std::string title = "unknown purpose";
++        auto purpose = TravelDestinationPurposeName.find(destination->GetPurpose());
++        if (purpose != TravelDestinationPurposeName.end()) title = purpose->second;
++        if (quest)
++        {
++            auto* info = sObjectMgr.GetQuestTemplate(quest->GetQuestId());
++            title += info ? ": " + Clip(OneLine(info->GetTitle()), 120) : ": quest template unavailable";
++        }
++        title += "; destination entry=" + std::to_string(destination->GetEntry());
++        auto status = target->GetStatus();
++        if (status == TravelStatus::TRAVEL_STATUS_NONE || status == TravelStatus::TRAVEL_STATUS_EXPIRED || status == TravelStatus::TRAVEL_STATUS_COOLDOWN)
++            return "no active travel plan";
++        return "planner destination (not proof of current action): " + title
++            + "; status=" + std::to_string(static_cast<unsigned>(status)) + (target->IsGroupCopy() ? "; copied group plan" : "; personal plan");
++    }
++    std::string Needs(Player* bot)
++    {
++        unsigned lowest = 100, freeSlots = 0;
++        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
++            if (!bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot)) ++freeSlots;
++        for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
++            if (auto* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
++                if (item->IsBag()) freeSlots += static_cast<Bag*>(item)->GetFreeSlots();
++        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
++            if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
++                if (uint32 maximum = item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY))
++                    lowest = std::min(lowest, unsigned(uint64_t(item->GetUInt32Value(ITEM_FIELD_DURABILITY)) * 100 / maximum));
++        return "health=" + std::to_string(bot->GetHealth()) + "/" + std::to_string(bot->GetMaxHealth())
++            + "; lowest equipped durability=" + std::to_string(lowest) + "%; free bag slots=" + std::to_string(freeSlots)
++            + "; these needs do not imply a trip to town";
++    }
++    std::string Quests(Player* bot)
++    {
++        if (!questCount) return "quest entries disabled";
++        std::string result = "quest log (not necessarily current goals):";
++        unsigned count = 0;
++        for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE && count < questCount; ++slot)
++        {
++            uint32 id = bot->GetQuestSlotQuestId(slot);
++            if (!id) continue;
++            auto* quest = sObjectMgr.GetQuestTemplate(id);
++            auto* status = bot->GetQuestStatusData(id);
++            if (!quest || !status) continue;
++            ++count;
++            result += "\n" + std::to_string(id) + " " + Clip(OneLine(quest->GetTitle()), 120)
++                + (bot->GetQuestStatus(id) == QUEST_STATUS_COMPLETE ? " [complete]" : " [in progress]");
++            for (unsigned i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
++            {
++                if (quest->ReqCreatureOrGOCount[i]) result += "; " + Clip(OneLine(quest->ObjectiveText[i]), 80) + " objective " + std::to_string(i + 1) + "=" + std::to_string(status->m_creatureOrGOcount[i]) + "/" + std::to_string(quest->ReqCreatureOrGOCount[i]);
++                if (quest->ReqItemCount[i]) result += "; item " + std::to_string(quest->ReqItemId[i]) + "=" + std::to_string(status->m_itemcount[i]) + "/" + std::to_string(quest->ReqItemCount[i]);
++            }
++        }
++        return count ? result : "no readable active quests";
++    }
++    std::string Party(Player* bot)
++    {
++        auto* group = bot->GetGroup();
++        if (!group) return "not grouped";
++        std::string result = "members=" + std::to_string(group->GetMembersCount()) + "; leader guid=" + std::to_string(group->GetLeaderGuid().GetRawValue());
++        unsigned count = 0;
++        for (auto const& member : group->GetMemberSlots())
++        {
++            if (++count > 8) break;
++            result += "; " + Clip(OneLine(member.name), 64);
++        }
++        return result;
++    }
++    using Source = std::string (*)(Player*);
++    // Add new sources here; selection, ordering and budgets remain config-driven.
++    std::map<std::string, Source> const sources{{"activity", Activity}, {"travel", Travel}, {"needs", Needs}, {"quests", Quests}, {"party", Party}};
++}
++void Configure(BotConfig const& config)
++{
++    enabled = config.GetBoolDefault("AiPlayerbot.LLMGameplayContextEnabled", false);
++    historyEnabled = config.GetBoolDefault("AiPlayerbot.LLMHistoryEnabled", false);
++    diagnostics = config.GetBoolDefault("AiPlayerbot.LLMContextDiagnostics", false);
++    budget = Bounded(config, "AiPlayerbot.LLMGameplayContextMaxBytes", 2048, 16384);
++    questCount = Bounded(config, "AiPlayerbot.LLMQuestContextMaxEntries", 3, 10);
++    historyBytes = Bounded(config, "AiPlayerbot.LLMHistoryMaxBytes", 4096, 32768);
++    historyCount = Bounded(config, "AiPlayerbot.LLMHistoryMaxMessages", 32, 128);
++    historyAge = Bounded(config, "AiPlayerbot.LLMHistoryMaxAgeSeconds", 1800, 86400);
++    fields.clear(); journals.clear();
++    std::istringstream names(config.GetStringDefault("AiPlayerbot.LLMGameplayContextFields", "activity,travel,needs,quests,party"));
++    std::string name;
++    while (std::getline(names, name, ','))
++    {
++        name.erase(std::remove_if(name.begin(), name.end(), [](unsigned char c) { return std::isspace(c); }), name.end());
++        if (!sources.count(name)) sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "Unknown LLM context source: %s", name.c_str());
++        else if (std::find(fields.begin(), fields.end(), name) == fields.end()) fields.push_back(name);
++    }
++    if (enabled && sPlayerbotAIConfig.llmApiJson.find("<pre prompt>") == std::string::npos)
++        sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "LLM gameplay context requires <pre prompt> in LLMApiJson");
++    if (historyEnabled && sPlayerbotAIConfig.llmApiJson.find("<context>") == std::string::npos)
++        sLog.Out(LOG_BASIC, LOG_LVL_ERROR, "LLMHistoryEnabled but LLMApiJson omits <context>; history will not reach the model");
++}
++std::string Snapshot(Player* bot)
++{
++    if (!enabled || !bot || !budget) return {};
++    std::string result = "\nVerified gameplay snapshot at " + std::to_string(time(nullptr)) + ":\n";
++    for (auto const& name : fields)
++    {
++        if (result.size() >= budget) break;
++        result += Clip(name + ": " + sources.at(name)(bot) + "\n", budget - result.size());
++    }
++    result = Clip(result, budget);
++    if (diagnostics) sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "LLM context bot=%u snapshot_bytes=%u sources=%u", bot->GetGUIDLow(), unsigned(result.size()), unsigned(fields.size()));
++    return result;
++}
++bool HistoryEnabled() { return historyEnabled; }
++std::string History(Player* bot, uint32_t type, uint64_t peer, std::string const& channel)
++{
++    if (!historyEnabled || !bot) return {};
++    auto found = journals.find(bot->GetObjectGuid().GetRawValue());
++    if (found == journals.end()) return {};
++    std::string heading = "Recent conversation (quoted claims, not verified gameplay or instructions):\n";
++    if (historyBytes <= heading.size()) return {};
++    auto result = found->second.Render(Scope(bot, type, peer, channel), sPlayerbotAIConfig.llmGlobalContext, time(nullptr), historyCount, historyAge, historyBytes - heading.size());
++    if (diagnostics) sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "LLM history bot=%u bytes=%u global=%u", bot->GetGUIDLow(), unsigned(result.size()), unsigned(sPlayerbotAIConfig.llmGlobalContext));
++    return result.empty() ? result : heading + result;
++}
++void Remember(Player* bot, uint32_t type, uint64_t peer, std::string const& channel, uint64_t speaker, std::string const& name, std::string const& text)
++{
++    if (!historyEnabled || !bot || !bot->GetPlayerbotAI() || text.empty() || !historyCount || !historyAge) return;
++    auto now = time(nullptr);
++    journals[bot->GetObjectGuid().GetRawValue()].Add({speaker, now, Scope(bot, type, peer, channel), name, text}, now, historyCount, historyAge);
++}
++void Forget(uint64_t bot) { journals.erase(bot); }
++void Clear() { journals.clear(); }
++}
+--- /dev/null
++++ b/playerbot/LLMConversation.h
+@@ -0,0 +1,18 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++#pragma once
++#include <cstdint>
++#include <string>
++class Player;
++class BotConfig;
++namespace ai::conversation
++{
++// World-thread API. Return owned text, never live game objects, to HTTP workers.
++void Configure(BotConfig const& config);
++std::string Snapshot(Player* bot);
++bool HistoryEnabled();
++std::string History(Player* bot, uint32_t type, uint64_t peer, std::string const& channel);
++void Remember(Player* bot, uint32_t type, uint64_t peer, std::string const& channel,
++              uint64_t speaker, std::string const& name, std::string const& text);
++void Forget(uint64_t bot);
++void Clear();
++}
+--- /dev/null
++++ b/playerbot/LLMConversationText.h
+@@ -0,0 +1,81 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++#pragma once
++#include <algorithm>
++#include <cstdint>
++#include <deque>
++#include <map>
++#include <string>
++namespace ai::conversation
++{
++// Budgets are UTF-8 bytes, not model tokens. Never cut a continuation byte.
++inline std::string Clip(std::string text, size_t bytes)
++{
++    if (text.size() <= bytes) return text;
++    while (bytes && (static_cast<unsigned char>(text[bytes]) & 0xc0) == 0x80) --bytes;
++    text.resize(bytes);
++    return text;
++}
++inline std::string OneLine(std::string text)
++{
++    for (char& c : text) if (static_cast<unsigned char>(c) < 32 || c == 127) c = ' ';
++    return text;
++}
++struct Turn
++{
++    uint64_t speaker;
++    int64_t time;
++    std::string scope, name, text;
++};
++class Journal
++{
++    std::deque<Turn> turns;
++public:
++    void Prune(int64_t now, size_t count, int64_t age)
++    {
++        while (!turns.empty() && (turns.size() > count || turns.front().time < now - age)) turns.pop_front();
++    }
++    void Add(Turn turn, int64_t now, size_t count, int64_t age)
++    {
++        turn.name = Clip(OneLine(turn.name), 64);
++        turn.text = Clip(OneLine(turn.text), 1024);
++        turns.push_back(std::move(turn));
++        Prune(now, count, age);
++    }
++    std::string Render(std::string const& scope, bool global, int64_t now, size_t count, int64_t age, size_t budget)
++    {
++        Prune(now, count, age);
++        std::string result;
++        for (auto it = turns.rbegin(); it != turns.rend(); ++it)
++        {
++            if (!global && it->scope != scope) continue;
++            std::string line = "[" + std::to_string(it->time) + " scope=" + it->scope + " speaker=" + std::to_string(it->speaker) + "] " + it->name + ": " + it->text + "\n";
++            if (result.size() + line.size() > budget) break; // retain whole, newest turns
++            result = line + result;
++        }
++        return result;
++    }
++};
++inline void FitHistory(std::string& history, size_t budget)
++{
++    while (history.size() > budget)
++    {
++        auto end = history.find('\n');
++        if (end == std::string::npos) { history.clear(); break; }
++        history.erase(0, end + 1);
++    }
++}
++// Substitute only original template tokens, never placeholders supplied in chat.
++inline std::string Expand(std::string const& input, std::map<std::string, std::string> const& values)
++{
++    std::string result;
++    for (size_t i = 0; i < input.size();)
++    {
++        bool found = false;
++        if (input[i] == '<') for (auto const& pair : values)
++            if (input.compare(i, pair.first.size(), pair.first) == 0)
++            { result += pair.second; i += pair.first.size(); found = true; break; }
++        if (!found) result += input[i++];
++    }
++    return result;
++}
++}
+--- a/playerbot/PlayerbotAI.cpp
++++ b/playerbot/PlayerbotAI.cpp
+@@ -1,3 +1,4 @@
++#include "playerbot/LLMConversation.h"
+ #include "playerbot/VMangosBotHooks.h"
+ #include "ahbot/AhBot.h"
+ #include "PlayerbotMgr.h"
+@@ -2086,7 +2087,7 @@
+                 return;
+             }
+ 
+-            if (isAiChat)
++            if (isAiChat && !conversation::HistoryEnabled())
+             {
+                 ChatChannelSource chatChannelSource = bot->GetPlayerbotAI()->GetChatChannelSource(bot, msgtype, chanName);
+ 
+--- a/playerbot/PlayerbotAIConfig.cpp
++++ b/playerbot/PlayerbotAIConfig.cpp
+@@ -1,3 +1,4 @@
++#include "playerbot/LLMConversation.h"
+ #include "playerbot/VMangosDatabase.h"
+ #include "playerbot/VMangosConfigPath.h"
+ #include "shared/Config/Config.h"
+@@ -726,6 +727,7 @@
+     }
+ 
+     llmGlobalContext = config.GetBoolDefault("AiPlayerbot.LLMGlobalContext", false);
++    ai::conversation::Configure(config);
+     llmBotToBotChatChance = config.GetIntDefault("AiPlayerbot.LLMBotToBotChatChance", 50);
+     llmRpgAIChatChance = config.GetIntDefault("AiPlayerbot.LLMRpgAIChatChance", 100);
+ 
+--- a/playerbot/VMangosBotHooks.cpp
++++ b/playerbot/VMangosBotHooks.cpp
+@@ -1,3 +1,4 @@
++#include "playerbot/LLMConversation.h"
+ #include "playerbot/strategy/actions/RpgSubActions.h"
+ // GPL-2.0-or-later.
+ #include "playerbot/VMangosBotHooks.h"
+@@ -46,6 +47,7 @@
+         DelayedPackets packets;
+         size_t index = 0;
+         std::chrono::steady_clock::time_point due;
++        uint32 group = 0, party = 0, subgroup = 0, guild = 0;
+     };
+     std::list<DelayedDelivery> deliveries;
+     std::map<ObjectGuid, std::chrono::steady_clock::time_point> ambientCooldown, nextSpeech;
+@@ -170,6 +172,13 @@
+     auto found = loginGenerations.find(player->GetObjectGuid());
+     if (found == loginGenerations.end()) return;
+     deliveries.push_back({player->GetObjectGuid(), found->second, ++nextChatRequest, receive, ambient, std::move(packets)});
++    auto& queued = deliveries.back();
++    auto* group = player->GetGroup();
++    auto* party = player->GetOriginalGroup() ? player->GetOriginalGroup() : group;
++    queued.group = group ? group->GetId() : 0;
++    queued.party = party ? party->GetId() : 0;
++    queued.subgroup = party ? party->GetMemberGroup(player->GetObjectGuid()) : 0;
++    queued.guild = player->GetGuildId();
+     if (sPlayerbotAIConfig.llmChatDiagnostics)
+         sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "LLM bot=%u request=%llu scheduled", player->GetGUIDLow(), (unsigned long long)nextChatRequest);
+ }
+@@ -195,6 +204,7 @@
+ void OnLogout(Player* player)
+ {
+     if (!active || !player) return;
++    ai::conversation::Forget(player->GetObjectGuid().GetRawValue());
+     online.erase(player->GetObjectGuid());
+     loginGenerations.erase(player->GetObjectGuid());
+     ambientCooldown.erase(player->GetObjectGuid());
+@@ -219,6 +229,7 @@
+     std::lock_guard<std::mutex> guard(eventMutex);
+     events.clear();
+     chatEvents.clear();
++    ai::conversation::Clear();
+     online.clear();
+     loginGenerations.clear();
+     ambientCooldown.clear();
+@@ -279,6 +290,23 @@
+             }
+             else
+             {
++                // A generated reply belongs to the group that requested it.
++                if (packet.first.GetOpcode() == CMSG_MESSAGECHAT && packet.first.size() >= 8)
++                {
++                    auto mode = packet.first.read<uint32>(0);
++                    auto* group = player->GetGroup();
++                    auto* party = player->GetOriginalGroup() ? player->GetOriginalGroup() : group;
++                    bool changed = mode == CHAT_MSG_PARTY && (delivery.party != (party ? party->GetId() : 0) || delivery.subgroup != (party ? party->GetMemberGroup(player->GetObjectGuid()) : 0));
++                    changed = changed || ((mode == CHAT_MSG_RAID || mode == CHAT_MSG_BATTLEGROUND) && delivery.group != (group ? group->GetId() : 0));
++                    changed = changed || ((mode == CHAT_MSG_GUILD || mode == CHAT_MSG_OFFICER) && delivery.guild != player->GetGuildId());
++                    if (changed)
++                    {
++                        if (sPlayerbotAIConfig.llmChatDiagnostics)
++                            sLog.Out(LOG_BASIC, LOG_LVL_MINIMAL, "LLM bot=%u request=%llu canceled: conversation group changed", player->GetGUIDLow(), (unsigned long long)delivery.request);
++                        delivery.index = delivery.packets.size();
++                        break;
++                    }
++                }
+                 auto binary = std::make_unique<WorldPacket>(packet.first);
+                 player->GetSession()->QueueBinaryPacket(binary);
+                 RecordSpeech(player);
+@@ -328,6 +356,9 @@
+     {
+         Player* sender = ObjectAccessor::FindPlayer(chat.sender);
+         if (!sender) continue;
++        // Chat events originate after the native handler accepts routing, not generation.
++        ai::conversation::Remember(sender, chat.type, chat.recipient.GetRawValue(), chat.channel,
++            chat.sender.GetRawValue(), sender->GetName(), chat.text);
+         if (chat.recipient)
+         {
+             if (Player* recipient = ObjectAccessor::FindPlayer(chat.recipient))
+--- a/playerbot/aiplayerbot.conf.dist.in
++++ b/playerbot/aiplayerbot.conf.dist.in
+@@ -4883,3 +4883,19 @@
+ AiPlayerbot.LLMConversationTurnDelayMs = 5000
+ AiPlayerbot.LLMConversationCooldownMs = 60000
+ AiPlayerbot.LLMChatDiagnostics = 0
++
++# Optional context providers. Captured on the world thread only when prompting.
++# Ordered CSV selects and prioritizes sources. Unknown names log a warning.
++AiPlayerbot.LLMGameplayContextEnabled = 0
++AiPlayerbot.LLMGameplayContextFields = activity,travel,needs,quests,party
++# UTF-8 BYTE budgets, not characters or model tokens. Maximum 16384 / 10.
++AiPlayerbot.LLMGameplayContextMaxBytes = 2048
++AiPlayerbot.LLMQuestContextMaxEntries = 3
++# Opt-in structured recent chat; replaces legacy ordinary-chat history reads.
++# Bounded per bot across ALL scopes; discarded on logout/config reload/restart.
++AiPlayerbot.LLMHistoryEnabled = 0
++AiPlayerbot.LLMHistoryMaxBytes = 4096
++AiPlayerbot.LLMHistoryMaxMessages = 32
++AiPlayerbot.LLMHistoryMaxAgeSeconds = 1800
++# Metadata only (source count/byte sizes), never prompt/chat/API key text.
++AiPlayerbot.LLMContextDiagnostics = 0
+--- a/playerbot/strategy/actions/RpgSubActions.cpp
++++ b/playerbot/strategy/actions/RpgSubActions.cpp
+@@ -1,3 +1,5 @@
++#include "playerbot/LLMConversation.h"
++#include "playerbot/LLMConversationText.h"
+ #include "playerbot/VMangosBotHooks.h"
+ 
+ #include "playerbot/playerbot.h"
+@@ -500,7 +502,7 @@
+     ChatReplyAction::GetAIChatPlaceholders(placeholders, bot, "bot");
+     ChatReplyAction::GetAIChatPlaceholders(placeholders, unit, "unit", bot);
+ 
+-    std::string prePrompt = sPlayerbotAIConfig.llmPreRpgPrompt;
++    std::string prePrompt = sPlayerbotAIConfig.llmPreRpgPrompt + " " + AI_VALUE(std::string, "manual saved string::llmdefaultprompt");
+ 
+     if (AI_VALUE2(bool, "trigger active", "rpg start quest"))
+         prePrompt += " <unit name> can offer <bot name> a new quest.";
+@@ -553,7 +555,9 @@
+         prompt.second = BOT_TEXT2(prompt.second, placeholders);
+     }
+ 
+-    uint32 currentLength = jsonFill["<pre prompt>"].size() + jsonFill["<context>"].size() + jsonFill["<prompt>"].size() + llmContext.size();
++    jsonFill["<pre prompt>"] += conversation::Snapshot(bot);
++
++    uint32 currentLength = jsonFill["<pre prompt>"].size() + jsonFill["<post prompt>"].size() + jsonFill["<prompt>"].size() + llmContext.size();
+     PlayerbotLLMInterface::LimitContext(llmContext, currentLength);
+     jsonFill["<context>"] = llmContext;
+ 
+@@ -573,9 +577,8 @@
+     deletePattern = PlayerbotTextMgr::GetReplacePlaceholders(sPlayerbotAIConfig.llmResponseDeletePattern, placeholders);
+     splitPattern = PlayerbotTextMgr::GetReplacePlaceholders(sPlayerbotAIConfig.llmResponseSplitPattern, placeholders);
+ 
+-    std::string json = PlayerbotTextMgr::GetReplacePlaceholders(sPlayerbotAIConfig.llmApiJson, jsonFill);
+-
+-    json = PlayerbotTextMgr::GetReplacePlaceholders(json, placeholders);
++    jsonFill.insert(placeholders.begin(), placeholders.end());
++    std::string json = conversation::Expand(sPlayerbotAIConfig.llmApiJson, jsonFill);
+ 
+     WorldSession* session = bot->GetSession();
+ 
+--- a/playerbot/strategy/actions/SayAction.cpp
++++ b/playerbot/strategy/actions/SayAction.cpp
+@@ -1,3 +1,5 @@
++#include "playerbot/LLMConversation.h"
++#include "playerbot/LLMConversationText.h"
+ 
+ #include "playerbot/playerbot.h"
+ #include "SayAction.h"
+@@ -486,6 +488,13 @@
+             llmChannel = ((chatChannelSource == ChatChannelSource::SRC_WHISPER) ? name : std::to_string(chatChannelSource));
+ 
+         std::string llmContext = AI_VALUE(std::string, "manual string::llmcontext" + llmChannel);
++        if (conversation::HistoryEnabled())
++        {
++            uint64 peer = ObjectGuid(HIGHGUID_PLAYER, guid1).GetRawValue();
++            llmContext = conversation::History(bot, type, peer, chanName);
++            if (player && player != bot)
++                conversation::Remember(bot, type, peer, chanName, peer, name, msg);
++        }
+ 
+         if (player)
+         {
+@@ -536,8 +545,11 @@
+                     prompt.second = BOT_TEXT2(prompt.second, placeholders);
+                 }
+ 
+-                uint32 currentLength = jsonFill["<pre prompt>"].size() + jsonFill["<context>"].size() + jsonFill["<prompt>"].size() + llmContext.size();
+-                PlayerbotLLMInterface::LimitContext(llmContext, currentLength);
++                jsonFill["<pre prompt>"] += conversation::Snapshot(bot);
++                uint32 currentLength = jsonFill["<pre prompt>"].size() + jsonFill["<post prompt>"].size() + jsonFill["<prompt>"].size() + llmContext.size();
++                if (conversation::HistoryEnabled() && sPlayerbotAIConfig.llmContextLength)
++                    conversation::FitHistory(llmContext, currentLength - llmContext.size() >= sPlayerbotAIConfig.llmContextLength ? 0 : sPlayerbotAIConfig.llmContextLength - (currentLength - llmContext.size()));
++                else PlayerbotLLMInterface::LimitContext(llmContext, currentLength);
+                 jsonFill["<context>"] = llmContext;
+ 
+                 llmContext += " " + jsonFill["<prompt>"];
+@@ -558,9 +570,8 @@
+                 deletePattern = PlayerbotTextMgr::GetReplacePlaceholders(sPlayerbotAIConfig.llmResponseDeletePattern, placeholders);
+                 splitPattern = PlayerbotTextMgr::GetReplacePlaceholders(sPlayerbotAIConfig.llmResponseSplitPattern, placeholders);
+ 
+-                std::string json = PlayerbotTextMgr::GetReplacePlaceholders(sPlayerbotAIConfig.llmApiJson, jsonFill);
+-
+-                json = PlayerbotTextMgr::GetReplacePlaceholders(json, placeholders);
++                jsonFill.insert(placeholders.begin(), placeholders.end());
++                std::string json = conversation::Expand(sPlayerbotAIConfig.llmApiJson, jsonFill);
+ 
+                 uint32 type = CHAT_MSG_WHISPER;
+                 std::string channelName;
+@@ -630,7 +641,8 @@
+                 llmContext = llmContext + " " + playerName + ":" + msg;
+                 PlayerbotLLMInterface::LimitContext(llmContext, llmContext.size());
+             }
+-            SET_AI_VALUE(std::string, "manual string::llmcontext" + llmChannel, llmContext);
++            if (!conversation::HistoryEnabled())
++                SET_AI_VALUE(std::string, "manual string::llmcontext" + llmChannel, llmContext);
+ 
+             return;
+         }

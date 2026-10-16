@@ -153,6 +153,14 @@ int main(int argc, char** argv)
     AutonomousBots::PollDelayedPackets(); holder.UpdateSessions(1);
     assert(handled.size() == 4 && handled.back() == CHAT_MSG_PARTY);
     assert(AutonomousBots::deliveries.empty());
+    Group changedGroup; changedGroup.m_Id = 42;
+    player->SetGroup(&changedGroup, 0);
+    schedule({{Chat(CHAT_MSG_PARTY),0}});
+    changedGroup.m_Id = 43;
+    AutonomousBots::nextSpeech.clear();
+    AutonomousBots::PollDelayedPackets(); holder.UpdateSessions(1);
+    assert(handled.size() == 4 && AutonomousBots::deliveries.empty());
+    player->SetGroup(nullptr);
     sObjectAccessor.RemoveObject(player);
     // Now retain the native handler and capture only its outgoing socket boundary.
     player->SetName("Bot"); player->LearnLanguage(LANG_COMMON);

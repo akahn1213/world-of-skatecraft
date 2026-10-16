@@ -68,6 +68,7 @@ def prepare(destination, core_cache=None, bots_cache=None):
         bots = tree / "src/game/AutonomousBots"
         checkout("playerbots", bots, bots_cache)
         apply(bots, (HERE / "module.patch").read_bytes(), normalize=True)
+        apply(bots, (HERE / "conversation.patch").read_bytes(), normalize=True)
         shutil.copy2(HERE / "vmangos.cmake", bots / "vmangos.cmake")
         shutil.copy2(HERE / "sources.json", tree / "playerbots-sources.json")
         prepare_sql(bots, tree / "sql/playerbots")
