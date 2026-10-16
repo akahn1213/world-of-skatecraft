@@ -1,28 +1,20 @@
+# syntax=docker/dockerfile:1
 # Build and run against the same base image: never copy host-linked binaries in.
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE} AS build
 USER root
-ARG BUILD_JOBS=4
+ARG BUILD_JOBS=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential cmake ninja-build git libboost-dev libmysqlclient-dev \
+    build-essential cmake ninja-build git ccache rsync time libboost-dev libmysqlclient-dev \
     libssl-dev zlib1g-dev && rm -rf /var/lib/apt/lists/*
+COPY build_cached.sh /build/build_cached.sh
 COPY source /build/source
-COPY provenance.json /tmp/playerbots-provenance.json
-RUN cmake -S /build/source -B /build/output -G Ninja \
-    -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_PREFIX=/opt/vmangos \
-    -DCONF_DIR=/opt/vmangos/config -DBUILD_PLAYERBOTS=ON \
-    -DUSE_SCRIPTS=ON -DUSE_PCH=ON -DPLAYERBOTS_USE_PCH=ON \
-    -DBUILD_EXTRACTORS=OFF -DBUILD_FOR_HOST_CPU=OFF \
-    -DENABLE_CPPTRACE=OFF -DDEBUG_SYMBOLS=ON \
-    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && \
-    cmake --build /build/output --parallel ${BUILD_JOBS} --target mangosd realmd && \
-    DESTDIR=/package cmake --install /build/output && \
-    mkdir -p /package/opt/vmangos/share/playerbots && \
-    cp /tmp/playerbots-provenance.json /package/opt/vmangos/share/playerbots/provenance.json && \
-    cd /package/opt/vmangos && sha256sum bin/mangosd bin/realmd > share/playerbots/binaries.sha256 && \
-    c++ --version > share/playerbots/compiler.txt && \
-    readelf -S bin/mangosd | grep -q .debug_info && \
-    readelf -S bin/mangosd | grep -q .debug_line
+ARG BUILD_CACHE_ID=playerbots-v1
+ARG DEBUG_PROFILE=lines
+RUN --mount=type=cache,id=${BUILD_CACHE_ID},target=/build/cache,sharing=locked \
+    sh /build/build_cached.sh
+# Commit metadata must not invalidate compilation.
+COPY provenance.json /package/opt/vmangos/share/playerbots/provenance.json
 
 FROM ${BASE_IMAGE} AS runtime
 USER root

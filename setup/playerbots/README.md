@@ -34,7 +34,7 @@ cmake -S .setup/playerbots-source -B .setup/playerbots-build -G Ninja \
   -DBUILD_PLAYERBOTS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
   -DUSE_SCRIPTS=ON -DUSE_PCH=OFF -DENABLE_CPPTRACE=OFF \
   -DBUILD_EXTRACTORS=OFF -DDEBUG_SYMBOLS=OFF -DBUILD_FOR_HOST_CPU=OFF
-cmake --build .setup/playerbots-build --parallel 4
+cmake --build .setup/playerbots-build --parallel 1
 cmake --install .setup/playerbots-build
 ```
 
@@ -62,13 +62,22 @@ python3 setup/playerbots/build_image.py --tag world-of-skatecraft/vmangos-player
 
 The default base is a pinned digest of the Ubuntu 26.04 vmangos-deploy image. To reuse your
 existing server image instead, pass `--base-image IMAGE`. Both build and runtime stages use
-that same image. Build dependencies are installed as root inside the build stage. `--jobs 4`
-controls compilation parallelism; optional `--core-cache`/`--bots-cache` reuse pinned clones.
-The script creates source-only build context and does not modify Compose, start containers,
+that same image. Build dependencies are installed as root inside the build stage.
+Docker Buildx is required. Defaults are `--jobs 1 --memory 4g --cpus 2`: one compile job,
+a 4-GiB limit for the entire dedicated BuildKit container, two CPUs, and no builder swap.
+This leaves headroom on an otherwise lightly loaded 8-GB machine; other host workloads
+still need their own memory. If the limit is insufficient, the build fails rather than
+consuming unlimited host memory. Increase it only when the host has spare RAM.
+Optional `--core-cache`/`--bots-cache` reuse pinned source clones.
+The script creates source-only build context and a build container; it does not modify Compose, start game servers,
 or import/reset any database. Use the resulting image in your existing **test** Compose file
 with its copied databases and existing extracted data. Preserve the original deployment.
 
-The image retains vmangos-deploy's wrappers and uses `RelWithDebInfo` and includes unstripped server binaries, gdb,
+The image retains vmangos-deploy's wrappers and uses optimized `RelWithDebInfo` with
+`--debug-profile lines` (`-O2 -g1`) by default. This preserves function/source-line
+backtraces but omits most local-variable/type debug information. Use `--debug-profile full`
+(`-O2 -g`) when detailed variable inspection is needed; it costs more build memory and disk.
+The image includes unstripped server binaries, gdb,
 configuration templates under `/opt/vmangos/config`, and bot SQL under
 `/opt/vmangos/share/vmangos/playerbots`. Existing bind mounts can hide the templates, so retain
 your already-created configuration files. Existing bot tables do not need reinstallation.
@@ -77,6 +86,33 @@ The main server command remains:
 ```bash
 /opt/vmangos/bin/mangosd -c /opt/vmangos/config/mangosd.conf
 ```
+
+The named builder persists Ninja outputs and a 2-GB ccache across invocations. Source
+synchronization preserves timestamps for unchanged contents, including fresh checkouts.
+Commit/provenance changes are packaged after compilation. Changed shared headers and PCHs
+still legitimately rebuild many files. Linking is serialized and GNU ld releases input
+buffers to reduce memory use. Build logs include elapsed time and maximum child-process
+RSS; that RSS is **not** the total concurrent builder memory peak.
+
+The first build with this workflow is a cold build and remains substantial. Prior Docker
+layers cannot supply its incremental object files. Keep the builder/cache between builds;
+Docker cache pruning or automatic eviction can force another cold build. Budget several
+GB of disk for objects, images and caches in addition to ccache. Docker installations using
+`vfs`/native snapshots copy whole layers and need substantially more disk than overlay
+storage; check free disk space as well as RAM before a full build. Changing RAM/CPU limits
+selects a separate named builder (shown in the output); changing base image or debug
+profile selects a separate compile cache. The user's default builder is unchanged.
+
+Run the asset-free build workflow regression with:
+
+```bash
+python3 setup/playerbots/test_build_image.py
+```
+
+It compiles a small C++ fixture through the actual Dockerfile, verifies resource limits,
+metadata-only caching, unchanged-checkout reuse with generated headers/PCHs, changed and
+newly added source files, failed-build recovery, runtime linkage and source-line debugging. It is not a full server build or an
+in-world test.
 
 The build verifies DWARF debug sections and GDB source-line lookup for the event loader.
 `DEBUG_SYMBOLS=ON` alone is insufficient with the pinned core’s Release configuration.
