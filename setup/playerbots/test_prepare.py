@@ -44,8 +44,14 @@ class PreparationTests(unittest.TestCase):
         tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=upstream).decode().split("\0")
         for name in filter(None, tracked):
             self.assertTrue((bots / name).is_file(), name)
-            if name.endswith(".sql") or "/aiplayerbot.conf" in name:
+            if name.endswith(".sql") or ("/aiplayerbot.conf" in name and name != "playerbot/aiplayerbot.conf.dist.in"):
                 self.assertEqual((bots / name).read_bytes(), (upstream / name).read_bytes(), name)
+        config = (bots / "playerbot/aiplayerbot.conf.dist.in").read_text()
+        self.assertIn("AiPlayerbot.LLMChatMinDelayMs = 3000", config)
+        self.assertIn("AiPlayerbot.LLMConversationTurnDelayMs = 5000", config)
+        self.assertIn("AiPlayerbot.LLMConversationCooldownMs = 60000", config)
+        self.assertIn("AiPlayerbot.LLMBotToBotChatChance = 50", config)
+        self.assertTrue((bots / "playerbot/LLMChatPacing.h").is_file())
         self.assertTrue((core / "src/game/Tarnished.cpp").is_file())
         self.assertIn("CollisionDamage", (core / "src/game/Skatecraft.cpp").read_text())
         self.assertEqual((bots / "vmangos.cmake").read_bytes(), (prepare.HERE / "vmangos.cmake").read_bytes())

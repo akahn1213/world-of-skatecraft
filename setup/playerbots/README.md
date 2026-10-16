@@ -261,3 +261,157 @@ A repeated in-world startup/shutdown test remains required before treating this 
 `vmangos.cmake` wires its build and installation. `includes.json` records the initial header
 mapping. Upstream sources, SQL, and copyright notices are retained. Server-side code keeps
 its upstream GPL licensing, separate from the Rust client's license. No game assets are bundled.
+
+## LLM chat delivery and pacing
+
+Generated whisper, party, guild, channel, raid and battleground messages enter the native
+chat handler through the autonomous session's ASYNC queue. Say/yell/emote use its MAP queue.
+Both queues are drained on the world thread after map workers join; ordinary human sessions
+remain on their normal scheduler. Native language, membership, subgroup and whisper
+restrictions still apply. Raid leader/warning prompts receive ordinary raid replies;
+battleground leader prompts receive ordinary battleground replies, without granting bots
+announcement privileges. Officer replies are triggered only from chat packets the bot actually receives through
+native guild-rank checks; officer messages are not broadly fanned out to other bots.
+Unknown conversation modes are rejected rather than silently becoming whispers. Channel
+conversation supports the existing World and built-in named channels; arbitrary custom
+channels remain outside the upstream channel classification.
+
+For `/say`, generated action text can use a native emote. In private, group and channel
+conversations it stays textual in the same audience, including its `*...*`/`[...]` markers.
+NPC RPG dialogue retains its native monster say/emote path. `debug llm` metadata follows
+the normal reply and never includes the HTTP request, API key or full response body.
+
+Add these settings to the **existing test server's** `aiplayerbot.conf` (a mounted file is
+not replaced when an image is rebuilt):
+
+```ini
+AiPlayerbot.LLMBotToBotChatChance = 50
+AiPlayerbot.LLMRpgAIChatChance = 100
+AiPlayerbot.LLMChatMinDelayMs = 3000
+AiPlayerbot.LLMChatMaxDelayMs = 15000
+AiPlayerbot.LLMChatMillisecondsPerCharacter = 100
+AiPlayerbot.LLMConversationTurnDelayMs = 5000
+AiPlayerbot.LLMConversationCooldownMs = 60000
+AiPlayerbot.LLMChatDiagnostics = 0
+```
+
+All timing settings are milliseconds. Each text piece waits
+`clamp(Unicode codepoints × milliseconds-per-character, min, max)` **after generation
+completes**. Generation time is never subtracted. The first piece also waits at least the
+turn delay. A shared per-bot speech clock enforces the turn delay between pieces and between
+normal/RPG output: the constraints combine by taking the later deadline, not adding both
+waits. Thus the maximum is a text-pacing maximum, not a bound on network latency, another
+pending reply, or a larger configured turn gap. An overdue tick sends one normally paced
+piece and starts the next wait from that tick; it does not dump all overdue lines at once.
+UTF-8 codepoints are counted, not bytes or visual grapheme clusters. Wire pieces are at most
+200 bytes, split without cutting a UTF-8 sequence or losing a character; each generated
+response is capped at 32 pieces.
+
+Admission is per bot, not global or party-wide. One ordinary generated reply may be pending
+per bot; further requests are dropped while it is pending rather than starting concurrent
+HTTP requests or accumulating an unbounded backlog. An RPG action owns at most one future
+and reserves that bot while waiting/speaking. The world update polls RPG output even when
+another AI action is selected. Combat, death or a changed RPG target cancels the RPG output
+once the worker is ready. Canceled asynchronous workers are retained until ready rather
+than destroying a running `std::async` future on a simulation tick. Shutdown still joins
+outstanding workers; an unresponsive model can therefore delay shutdown until its network
+operation finishes. No detached worker retains a player pointer.
+
+Ambient cooldown is per initiating bot, measured from completion/cancellation, and applies
+to new RPG conversations and ordinary bot-originated replies. Human-originated replies
+bypass that cooldown, but not the pending-work limit. Existing conversations have at most
+six generated speaker turns; new conversations wait for the cooldown. Several different
+bots can still speak concurrently. These controls do not pace scripted `custom::say`
+tactical warnings, canned command responses or event broadcasts. They do not change
+`ReactDelay` or apply speech waits as combat/navigation action durations.
+
+The two probabilities remain independent: `LLMBotToBotChatChance` gates ordinary eligible
+bot replies; `LLMRpgAIChatChance` gates autonomous RPG initiation. A setting of 50 does not
+mean half of every visible line receives a response; existing proximity/strategy/channel
+gates still apply. The bot-to-bot default is now 50; an explicitly configured 0 remains 0.
+
+Negative pacing values become zero. Minimum/maximum/turn are capped at 60,000 ms,
+milliseconds-per-character at 1,000 and cooldown at 3,600,000 ms. A maximum below the minimum
+is raised to the minimum. Zero disables that individual timing constraint; all zeroes permit
+immediate speech. New requests copy the current text-pacing configuration; queued text
+keeps its delays. Shared speech/cooldown deadlines already recorded are not retroactively
+changed on reload; newly recorded deadlines use the current settings. A restart is the
+simplest way to apply and verify an edited config.
+
+`LLMChatDiagnostics = 1` logs bot/request IDs, parsed packet counts, queued packet delays in
+ms, and session-change cancellations. "Queued" means handed to native validation, not proof
+that a receiver displayed the message. Native handler diagnostics and a client chat trace
+are needed to distinguish muted/restricted/absent receivers. Ordinary pacing is not an ERROR.
+The existing Windows client trace can be enabled with `RUST_LOG=info,benilla_app::ui_chat=debug`.
+
+The user's Ollama native request shape remains supported; do not replace `/api/chat` or
+remove `think:false` when testing these queue fixes. For example:
+
+```ini
+AiPlayerbot.LLMApiEndpoint = http://192.168.0.170:11434/api/chat
+AiPlayerbot.LLMApiJson = {"model":"qwen3.5:4b","messages":[{"role":"user","content":"<pre prompt> <context> <prompt> <post prompt>"}],"think":false,"stream":false,"options":{"num_predict":120}}
+AiPlayerbot.LLMResponseStartPattern = ("content":\s*")
+```
+
+### Regression and live acceptance
+
+After building the native server, run:
+
+```bash
+python3 setup/playerbots/test_chat.py .setup/playerbots-build
+```
+
+This uses a loopback mock HTTP server, actual generation/parser/packet code, native session
+queues and the production bot holder. Mode coverage observes native handler entry for
+say/yell/emote/guild/officer/channel/raid/battleground. Whisper and party also execute the
+native handler and capture outgoing packets at the socket boundary, including subgroup and
+language rejection. The production delayed-delivery scheduler is compiled into the fixture
+so controlled monotonic deadlines can verify pacing, bounded admission, late ticks and stale
+login generations without real-time sleeps. This is synthetic server validation, not a
+live dungeon or a full guild/channel permission fixture.
+
+On the test server, use the same bot/account to verify mock `/say`, `/party`, `/whisper`,
+then real Ollama `/api/chat`. Test guild/channel/raid with actual membership and restrictions,
+then run a dungeon with several bots at 50% bot-to-bot chance. Verify readable turns, normal
+combat responsiveness and no stale dialogue after logout/relogin. Record the active image,
+config mount/path and pacing values alongside results.
+
+### Update only the existing test deployment
+
+No map extraction, SQL import, database reset, schema migration or client rebuild is needed.
+Keep the original deployment and existing data mounts untouched. On a roughly 8-GB host use
+`--jobs 1` (or 2 if memory allows); build in the runtime image to preserve its library ABI.
+The builder reuses Docker layers that match; do not prune its cache between attempts.
+
+From the checkout root, with `TEST` set to the existing test deployment directory:
+
+```bash
+TEST="$PWD/.setup/playerbots-test-server"
+CHAT_TAG="world-of-skatecraft/vmangos-playerbots:chat-$(git rev-parse --short HEAD)"
+python3 setup/playerbots/build_image.py --tag "$CHAT_TAG" --jobs 1
+# Save the currently running image identity before switching it.
+docker inspect --format '{{.Image}}' \
+  "$(docker compose -p world-of-skatecraft-playerbots -f "$TEST/compose.yaml" ps -q mangosd)" \
+  > "$TEST/chat-previous-image.txt"
+# Back up the actual mounted aiplayerbot.conf before editing it; locate that mount with:
+docker inspect --format '{{json .Mounts}}' \
+  "$(docker compose -p world-of-skatecraft-playerbots -f "$TEST/compose.yaml" ps -q mangosd)"
+# Set CONFIG to that host-side aiplayerbot.conf, then:
+cp -- "$CONFIG" "$CONFIG.before-chat"
+printf 'services:\n  mangosd:\n    image: %s\n' "$CHAT_TAG" > "$TEST/chat-image.yaml"
+docker compose -p world-of-skatecraft-playerbots -f "$TEST/compose.yaml" \
+  -f "$TEST/chat-image.yaml" up -d --no-deps --force-recreate mangosd
+docker compose -p world-of-skatecraft-playerbots -f "$TEST/compose.yaml" \
+  -f "$TEST/chat-image.yaml" exec mangosd sh -c \
+  'cd /opt/vmangos && sha256sum -c share/playerbots/binaries.sha256 && cat share/playerbots/provenance.json'
+```
+
+Use your actual existing Compose filename/additional override files if different; preserve
+the same project name and settings. Restore the backed-up config and prior image to roll back:
+
+```bash
+cp -- "$CONFIG.before-chat" "$CONFIG"
+printf 'services:\n  mangosd:\n    image: %s\n' "$(cat "$TEST/chat-previous-image.txt")" > "$TEST/chat-rollback.yaml"
+docker compose -p world-of-skatecraft-playerbots -f "$TEST/compose.yaml" \
+  -f "$TEST/chat-rollback.yaml" up -d --no-deps --force-recreate mangosd
+```

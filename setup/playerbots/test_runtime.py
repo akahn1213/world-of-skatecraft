@@ -17,7 +17,7 @@ import uuid
 from prepare_sql import prepare_sql
 
 
-def compile_fixture(build, output, sanitize=False):
+def compile_fixture(build, output, sanitize=False, fixture=None, link_flags=()):
     commands = json.loads((build / 'compile_commands.json').read_text())
     c = next(c for c in commands if c['file'].endswith('/VMangosBotConfig.cpp'))
     command = shlex.split(c['command'])
@@ -55,7 +55,7 @@ def compile_fixture(build, output, sanitize=False):
                             str(module / relative), '-o', str(obj)], cwd=build, check=True)
             objects.append(str(obj))
     # Tests inspect cache state through private APIs, without production test hooks.
-    subprocess.run([*common, str(Path(__file__).resolve().parent / 'tests/runtime.cpp'),
+    subprocess.run([*common, str(fixture or Path(__file__).resolve().parent / 'tests/runtime.cpp'), *link_flags,
                     *objects, '-o', str(output), '-Wl,--start-group', *libraries,
                     '-Wl,--end-group', mysql, '-lssl', '-lcrypto', '-lz', '-ldl', '-pthread'],
                    cwd=build, check=True)
