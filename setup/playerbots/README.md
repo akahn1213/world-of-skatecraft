@@ -567,3 +567,43 @@ separation, expiry/count/byte limits, Unicode, nonrecursive placeholders and the
 JSON received by a local mock HTTP endpoint. The chat fixture checks native delivery and
 pacing, including regrouping cancellation. These do not establish live model quality,
 navigation behavior or performance on your Ollama hardware.
+
+## Smooth energy regeneration
+
+`energy.patch` changes automatic energy regeneration from 20 every two seconds to
+1 every 100 ms at the normal server rate (still 10 energy/second). The existing energy
+rate setting and percentage regeneration auras continue to apply. Fractional gains are
+retained, delayed world updates catch up, and energy cannot accumulate beyond the cap.
+Death and player destruction clear the private energy clock. Other powers and health
+retain their existing two-second regeneration schedule. Actual updates remain limited
+by the server's world-update cadence; a delayed tick can deliver several energy at once.
+
+This intentionally differs from vanilla and is applied automatically by `prepare.py`.
+Only `src/game/Objects/Player.cpp` changes in the prepared core: no shared header,
+Player layout, PCH, source-file list, compiler setting or cache key changes. With the
+existing populated builder cache and the same base image, debug profile and resource
+limits, the expected incremental work is compiling `Player.cpp`, updating `libgame`,
+relinking the server and packaging the image. No client build, SQL changes, accounts
+reset or asset extraction is needed.
+
+Use your previous build command with a new image tag, for example:
+
+```bash
+python3 setup/playerbots/build_image.py --tag world-of-skatecraft/vmangos-playerbots:smooth-energy
+```
+
+Keep any custom `--memory`, `--cpus`, `--base-image` and `--debug-profile` values from your
+previous build. Changing them can select a different builder/cache. Do not prune caches
+or delete the builder before rebuilding. A missing/evicted cache still requires a cold
+build; the Docker build log should otherwise show only the affected compile and links.
+
+Focused asset-free regression (extracts and compiles the actual patched implementation
+and regeneration gates with a small player fixture under ASan/UBSan):
+
+```bash
+python3 setup/playerbots/test_energy.py /path/to/prepared/source
+```
+
+This checks timing, unchanged other-power cadence, combat, delayed ticks, modifiers,
+fractional rates, caps, death and player isolation. It is not a full native server or
+live client/network test.

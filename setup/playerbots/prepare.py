@@ -65,6 +65,7 @@ def prepare(destination, core_cache=None, bots_cache=None):
         apply(tree, (ROOT / "setup/vmangos/skatecraft.patch").read_bytes())
         apply(tree, prepare_tarnished((ROOT / "setup/vmangos/tarnished.patch").read_bytes()))
         apply(tree, (HERE / "core.patch").read_bytes(), normalize=True)
+        apply(tree, (HERE / "energy.patch").read_bytes(), normalize=True)
         bots = tree / "src/game/AutonomousBots"
         checkout("playerbots", bots, bots_cache)
         apply(bots, (HERE / "module.patch").read_bytes(), normalize=True)

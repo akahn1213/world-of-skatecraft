@@ -1,0 +1,110 @@
+--- a/src/game/Objects/Player.cpp
++++ b/src/game/Objects/Player.cpp
+@@ -87,6 +87,76 @@
+ #include "world/world_event_wareffort.h"
+ 
+ #include <climits>
++#include <cmath>
++#include <mutex>
++#include <unordered_map>
++
++// Skatecraft deviation: energy regenerates at 10 Hz instead of vanilla's 2-second tick.
++// Keep this state private to Player.cpp so tuning it does not invalidate Player.h/PCHs.
++namespace
++{
++    struct EnergyRegenState
++    {
++        uint32 elapsed = 0;
++        double fraction = 0.0;
++
++        uint32 Advance(uint32 diff, double rate, uint32 current, uint32 maximum)
++        {
++            uint64 total = uint64(elapsed) + diff;
++            uint64 ticks = total / 100;
++            elapsed = uint32(total % 100);
++            if (current >= maximum)
++            {
++                fraction = 0.0; // Never bank energy while capped.
++                return 0;
++            }
++            if (!ticks || !std::isfinite(rate) || rate <= 0.0)
++                return 0;
++            double gain = fraction + double(ticks) * rate;
++            uint32 missing = maximum - current;
++            if (gain >= missing)
++            {
++                fraction = 0.0;
++                return missing;
++            }
++            uint32 whole = uint32(gain);
++            fraction = gain - whole;
++            return whole;
++        }
++    };
++
++    // Players can change map threads. A thread-local clock would lose state on transfer.
++    std::mutex energyRegenMutex;
++    std::unordered_map<Player const*, EnergyRegenState> energyRegenStates;
++
++    void ResetEnergyRegen(Player const* player)
++    {
++        std::lock_guard<std::mutex> lock(energyRegenMutex);
++        energyRegenStates.erase(player);
++    }
++
++    void RegenerateEnergy(Player* player, uint32 diff)
++    {
++        uint32 maximum = player->GetMaxPower(POWER_ENERGY);
++        if (!maximum)
++        {
++            ResetEnergyRegen(player);
++            return;
++        }
++        double rate = sWorld.getConfig(CONFIG_FLOAT_RATE_POWER_ENERGY);
++        for (auto const* aura : player->GetAurasByType(SPELL_AURA_MOD_POWER_REGEN_PERCENT))
++            if (aura->GetModifier()->m_miscvalue == int32(POWER_ENERGY))
++                rate *= (aura->GetModifier()->m_amount + 100) / 100.0;
++        uint32 current = player->GetPower(POWER_ENERGY);
++        uint32 gain;
++        {
++            std::lock_guard<std::mutex> lock(energyRegenMutex);
++            gain = energyRegenStates[player].Advance(diff, rate, current, maximum);
++        }
++        if (gain)
++            player->SetPower(POWER_ENERGY, current + gain);
++    }
++}
+ 
+ #define ZONE_UPDATE_INTERVAL (1*IN_MILLISECONDS)
+ 
+@@ -290,6 +360,7 @@
+ 
+ Player::~Player()
+ {
++    ResetEnergyRegen(this);
+ #ifdef ENABLE_PLAYERBOTS
+     RemovePlayerbotAI();
+     RemovePlayerbotMgr();
+@@ -1248,12 +1319,14 @@
+ 
+     if (IsAlive())
+     {
++        RegenerateEnergy(this, update_diff);
+         m_regenTimer -= update_diff;
+         RegenerateAll();
+     }
+     else
+     {
+         m_regenTimer = 0;
++        ResetEnergyRegen(this);
+     }
+ 
+     if (m_deathState == JUST_DIED)
+@@ -2293,7 +2366,6 @@
+             Regenerate(POWER_RAGE);
+     }
+ 
+-    Regenerate(POWER_ENERGY);
+     Regenerate(POWER_MANA);
+ 
+     m_regenTimer += REGEN_TIME_PLAYER_FULL;
