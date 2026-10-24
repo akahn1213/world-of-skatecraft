@@ -1,9 +1,13 @@
 #!/bin/sh
-# Runs inside the build image. /build/cache is a locked, disposable BuildKit cache.
+# Runs in the pinned toolchain container. /build/cache is a persistent Docker volume.
 set -eu
 : "${BUILD_JOBS:=1}" "${DEBUG_PROFILE:=lines}"
 case "$BUILD_JOBS" in ''|*[!0-9]*|0) echo 'BUILD_JOBS must be positive' >&2; exit 2;; esac
 case "$DEBUG_PROFILE" in lines) debug_flags='-O2 -g1 -DNDEBUG';; full) debug_flags='-O2 -g -DNDEBUG';; *) exit 2;; esac
+mkdir -p /build/cache
+# Serialize writers even when builds use different Buildx builders/resource limits.
+exec 9>/build/cache/build.lock
+flock 9
 mkdir -p /build/cache/source /build/cache/ccache
 # No -t: unchanged content must retain its timestamp, even after a fresh checkout.
 # --delete handles removed/renamed files. Only this owned cache is synchronized.
@@ -12,11 +16,34 @@ rsync -rclp --checksum --delete \
     --exclude=/src/shared/revision.h --exclude=/src/shared/Progression.h \
     --exclude=/src/shared/migrations_list.h /build/source/ /build/cache/source/
 # A toolchain/dependency change must not reuse an old CMake compiler configuration.
-fingerprint=$( (c++ --version; cmake --version; dpkg-query -W; sha256sum /build/build_cached.sh; printf '%s\n' "$debug_flags") | sha256sum | cut -d' ' -f1)
+(c++ --version; cmake --version; dpkg-query -W; printf '%s\n' "$debug_flags") > /tmp/toolchain.txt
+fingerprint=$(sha256sum /tmp/toolchain.txt | cut -d' ' -f1)
+# Import the previous BuildKit fingerprint only if compiler/packages/flags match.
+legacy_compatible=0
+if [ -f /build/cache/legacy-script-sha ]; then
+    legacy_fingerprint=$( (c++ --version; cmake --version; dpkg-query -W; printf '%s  /build/build_cached.sh\n' "$(cat /build/cache/legacy-script-sha)"; printf '%s\n' "$debug_flags") | sha256sum | cut -d' ' -f1)
+    if [ "$(cat /build/cache/toolchain 2>/dev/null || true)" = "$legacy_fingerprint" ]; then
+        printf '%s\n' "$fingerprint" > /build/cache/toolchain
+        legacy_compatible=1
+        echo 'Imported legacy objects: toolchain fingerprint matches.'
+    fi
+    rm /build/cache/legacy-script-sha
+fi
 if [ "$(cat /build/cache/toolchain 2>/dev/null || true)" != "$fingerprint" ]; then
+    if [ -f /build/cache/toolchain ]; then
+        echo 'Reconfiguring from scratch: compiler/package/debug flags changed.'
+        diff -u /build/cache/toolchain.txt /tmp/toolchain.txt || true
+    else
+        echo 'Cold cache: no saved toolchain/object files in this volume.'
+    fi
     rm -rf /build/cache/output
     printf '%s\n' "$fingerprint" > /build/cache/toolchain
+else
+    echo 'Reusing persistent compiler outputs: toolchain unchanged.'
 fi
+cp /tmp/toolchain.txt /build/cache/toolchain.txt
+printf 'Saved object files: '
+find /build/cache/output -name '*.o' 2>/dev/null | wc -l
 export CCACHE_DIR=/build/cache/ccache
 export CCACHE_COMPILERCHECK=content
 # Safe PCH reuse requires these options with ccache/GCC. Ninja still tracks header changes.
@@ -30,10 +57,8 @@ ccache --zero-stats
 source_list=$(find /build/source -path /build/source/.git -prune -o \
     \( -type f -o -type l \) -print | LC_ALL=C sort | sha256sum | cut -d' ' -f1)
 core_revision=$(git -C /build/cache/source rev-parse HEAD 2>/dev/null || true)
-configuration_key="$source_list/$core_revision"
-if [ ! -f /build/cache/output/build.ninja ] || \
-   [ "$(cat /build/cache/configuration-key 2>/dev/null || true)" != "$configuration_key" ]; then
-cmake -S /build/cache/source -B /build/cache/output -G Ninja \
+# Hash actual configure arguments, not this script's source text.
+set -- \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo "-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=$debug_flags" \
     "-DCMAKE_C_FLAGS_RELWITHDEBINFO=$debug_flags" \
     -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
@@ -43,8 +68,18 @@ cmake -S /build/cache/source -B /build/cache/output -G Ninja \
     -DBUILD_PLAYERBOTS=ON -DUSE_SCRIPTS=ON -DUSE_PCH=ON -DPLAYERBOTS_USE_PCH=ON \
     -DBUILD_EXTRACTORS=OFF -DBUILD_FOR_HOST_CPU=OFF -DENABLE_CPPTRACE=OFF \
     -DDEBUG_SYMBOLS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+configuration_key="$source_list/$core_revision/$(printf '%s\n' "$@" | sha256sum | cut -d' ' -f1)"
+if [ "$legacy_compatible" = 1 ] && [ "$(cat /build/cache/configuration-key 2>/dev/null || true)" = "$source_list/$core_revision" ]; then
+    # These flags match the old builder; avoid regenerating its PCH helper files.
     printf '%s\n' "$configuration_key" > /build/cache/configuration-key
 fi
+if [ ! -f /build/cache/output/build.ninja ] || \
+   [ "$(cat /build/cache/configuration-key 2>/dev/null || true)" != "$configuration_key" ]; then
+cmake -S /build/cache/source -B /build/cache/output -G Ninja "$@"
+    printf '%s\n' "$configuration_key" > /build/cache/configuration-key
+fi
+# No script-content hash in the object-cache key: editing diagnostics must not
+# delete valid outputs. CMake/Ninja track source, header and CMake dependencies.
 /usr/bin/time -v cmake --build /build/cache/output --parallel "$BUILD_JOBS" --target mangosd realmd
 # /package is outside the cache: cached or not, the build stage contains its artifacts.
 DESTDIR=/package cmake --install /build/cache/output

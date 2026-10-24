@@ -1,0 +1,10 @@
+# syntax=docker/dockerfile:1
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER root
+# Match the old dependency-install layer for the standard one-job builder.
+ARG BUILD_JOBS=1
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake ninja-build git ccache rsync time libboost-dev libmysqlclient-dev \
+    libssl-dev zlib1g-dev && rm -rf /var/lib/apt/lists/*
+ENTRYPOINT ["sh"]

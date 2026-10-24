@@ -61,10 +61,12 @@ python3 setup/playerbots/build_image.py --tag world-of-skatecraft/vmangos-player
 ```
 
 The default base is a pinned digest of the Ubuntu 26.04 vmangos-deploy image. To reuse your
-existing server image instead, pass `--base-image IMAGE`. Both build and runtime stages use
-that same image. Build dependencies are installed as root inside the build stage.
-Docker Buildx is required. Defaults are `--jobs 1 --memory 4g --cpus 2`: one compile job,
-a 4-GiB limit for the entire dedicated BuildKit container, two CPUs, and no builder swap.
+existing server image instead, pass `--base-image IMAGE`. The toolchain and runtime both derive from
+that same image. Build dependencies are installed as root in a reusable toolchain image.
+Docker Buildx and a local Docker daemon are required (sources are bind-mounted into
+the compile container). Defaults are `--jobs 1 --memory 4g --cpus 2`: one compile job,
+a 4-GiB limit on each compile/BuildKit container, two CPUs, and no container swap.
+Compilation and image packaging run sequentially.
 This leaves headroom on an otherwise lightly loaded 8-GB machine; other host workloads
 still need their own memory. If the limit is insufficient, the build fails rather than
 consuming unlimited host memory. Increase it only when the host has spare RAM.
@@ -87,32 +89,56 @@ The main server command remains:
 /opt/vmangos/bin/mangosd -c /opt/vmangos/config/mangosd.conf
 ```
 
-The named builder persists Ninja outputs and a 2-GB ccache across invocations. Source
-synchronization preserves timestamps for unchanged contents, including fresh checkouts.
-Commit/provenance changes are packaged after compilation. Changed shared headers and PCHs
+Compiler outputs live in a **named Docker volume**, printed as
+`playerbots-objects-...`, rather than an evictable BuildKit cache mount. It contains
+Ninja outputs, a stable source tree and a 2-GB ccache. `sudo` and non-sudo commands
+using the **same Docker daemon/context** use the same volume, as do different CPU/RAM
+limits. Base-image and debug-profile changes select a separate volume.
+
+The toolchain image is reused by its recipe/base key instead of running `apt-get` on
+each source change. Compilation takes place in a disposable, resource-limited container
+with no network access and an exclusive volume lock. Source sync preserves unchanged
+file timestamps. A new checkout path, image tag, commit metadata, or diagnostics-only
+build-script edit does not delete valid objects. CMake argument changes reconfigure;
+compiler/package/debug-flag changes explicitly report invalidation. The log prints the
+volume name, cold/reuse reason and number of saved object files before compiling.
+`Statistics zeroed` resets ccache counters, not cached files; a Ninja no-op correctly
+has zero compiler-cache hits because it did not invoke the compiler at all.
+
+On first use, the builder attempts to export the old BuildKit cache into the volume.
+Import preserves old objects only if the compiler, installed packages and debug flags
+match the old fingerprint. Otherwise it retains ccache and reports why configuration
+must be rebuilt. An already evicted cache cannot be recovered: that first build must
+be cold. Keep the old builder until migration completes. Migration temporarily needs
+space for a tar copy of the old cache.
+
+BuildKit garbage collection and pruning its layers no longer erase compiler outputs.
+Do not delete the named volume or use volume-pruning commands that remove it. Keep the
+printed toolchain image too; deleting it can lead to newly installed package versions
+on the next build and a justified rebuild. Named volumes and toolchain images require
+several GB of persistent disk space. Docker `vfs`/native snapshots need substantially
+more disk than overlay storage. The user's default Buildx builder is unchanged.
+
+Commit/provenance changes are packaged after compilation. Shared header/PCH changes
 still legitimately rebuild many files. Linking is serialized and GNU ld releases input
 buffers to reduce memory use. Build logs include elapsed time and maximum child-process
-RSS; that RSS is **not** the total concurrent builder memory peak.
+RSS; that RSS is **not** the total concurrent container memory peak.
 
-The first build with this workflow is a cold build and remains substantial. Prior Docker
-layers cannot supply its incremental object files. Keep the builder/cache between builds;
-Docker cache pruning or automatic eviction can force another cold build. Budget several
-GB of disk for objects, images and caches in addition to ccache. Docker installations using
-`vfs`/native snapshots copy whole layers and need substantially more disk than overlay
-storage; check free disk space as well as RAM before a full build. Changing RAM/CPU limits
-selects a separate named builder (shown in the output); changing base image or debug
-profile selects a separate compile cache. The user's default builder is unchanged.
-
-Run the asset-free build workflow regression with:
+Run the build regression with:
 
 ```bash
 python3 setup/playerbots/test_build_image.py
+python3 setup/playerbots/test_cache_migration.py
+# Optional: the same repeated-build test with a complete prepared native source tree.
+python3 setup/playerbots/test_build_image.py --source /path/to/prepared/source
 ```
 
-It compiles a small C++ fixture through the actual Dockerfile, verifies resource limits,
-metadata-only caching, unchanged-checkout reuse with generated headers/PCHs, changed and
-newly added source files, failed-build recovery, runtime linkage and source-line debugging. It is not a full server build or an
-in-world test.
+Each case uses a **separate compile container and image build** through the production
+runner. The test checks a cold build, a fresh checkout with no compilation, a one-file
+edit compiling only that file, a diagnostics-only script edit/resource change with no
+compilation, runtime linkage, image metadata and GDB source-line information. The default
+uses a small C++/PCH fixture; `--source` builds the full server and can take substantial
+time. Tests remove only their uniquely owned volume and final test image.
 
 The build verifies DWARF debug sections and GDB source-line lookup for the event loader.
 `DEBUG_SYMBOLS=ON` alone is insufficient with the pinned core’s Release configuration.
@@ -417,7 +443,7 @@ config mount/path and pacing values alongside results.
 No map extraction, SQL import, database reset, schema migration or client rebuild is needed.
 Keep the original deployment and existing data mounts untouched. On a roughly 8-GB host use
 `--jobs 1` (or 2 if memory allows); build in the runtime image to preserve its library ABI.
-The builder reuses Docker layers that match; do not prune its cache between attempts.
+The build reuses the named compiler volume and toolchain image; preserve both between attempts.
 
 From the checkout root, with `TEST` set to the existing test deployment directory:
 
@@ -581,8 +607,7 @@ by the server's world-update cadence; a delayed tick can deliver several energy 
 This intentionally differs from vanilla and is applied automatically by `prepare.py`.
 Only `src/game/Objects/Player.cpp` changes in the prepared core: no shared header,
 Player layout, PCH, source-file list, compiler setting or cache key changes. With the
-existing populated builder cache and the same base image, debug profile and resource
-limits, the expected incremental work is compiling `Player.cpp`, updating `libgame`,
+existing populated compiler volume and the same base image and debug profile, the expected incremental work is compiling `Player.cpp`, updating `libgame`,
 relinking the server and packaging the image. No client build, SQL changes, accounts
 reset or asset extraction is needed.
 
@@ -592,10 +617,10 @@ Use your previous build command with a new image tag, for example:
 python3 setup/playerbots/build_image.py --tag world-of-skatecraft/vmangos-playerbots:smooth-energy
 ```
 
-Keep any custom `--memory`, `--cpus`, `--base-image` and `--debug-profile` values from your
-previous build. Changing them can select a different builder/cache. Do not prune caches
-or delete the builder before rebuilding. A missing/evicted cache still requires a cold
-build; the Docker build log should otherwise show only the affected compile and links.
+Keep your base image and debug profile unchanged to reuse the compiler volume. CPU/RAM
+limits can change without selecting another object volume. Preserve that volume and its
+toolchain image; missing compiler outputs still require a cold build. See the migration
+notes above when upgrading from the old BuildKit-cache implementation.
 
 Focused asset-free regression (extracts and compiles the actual patched implementation
 and regeneration gates with a small player fixture under ASan/UBSan):
